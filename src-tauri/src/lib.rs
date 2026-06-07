@@ -780,54 +780,98 @@ fn get_microsoft_account() -> MicrosoftAccountStatus {
 
 #[tauri::command]
 fn begin_microsoft_login(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("microsoft-login") {
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
+    let helper_name = "VexMicrosoftAuth.exe";
+    let resource_helper = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?
+        .join("auth-helper")
+        .join(helper_name);
+    let development_helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("auth-helper")
+        .join(helper_name);
+    let helper_path = if resource_helper.is_file() {
+        resource_helper
+    } else if development_helper.is_file() {
+        development_helper
+    } else {
+        return Err(String::from(
+            "O componente seguro de login Microsoft não foi encontrado. Reinstale o VEX Launcher.",
+        ));
+    };
+
+    let auth_dir = storage_root().join("auth");
+    fs::create_dir_all(&auth_dir).map_err(|error| error.to_string())?;
+    let result_path = auth_dir.join("microsoft-login-result.txt");
+    if result_path.is_file() {
+        fs::remove_file(&result_path).map_err(|error| error.to_string())?;
     }
-    let app_for_navigation = app.clone();
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        "microsoft-login",
-        tauri::WebviewUrl::External(
-            microsoft_login_url()
-                .parse()
-                .map_err(|error| format!("URL de login inválida: {error}"))?,
-        ),
-    )
-    .title("Entrar com Microsoft - VEX Launcher")
-    .inner_size(520.0, 680.0)
-    .min_inner_size(420.0, 560.0)
-    .center()
-    .on_navigation(move |url| {
-        if url.as_str().starts_with(MICROSOFT_REDIRECT_URI) {
-            if let Some(code) = url
-                .query_pairs()
-                .find_map(|(key, value)| (key == "code").then(|| value.into_owned()))
-            {
-                let _ = app_for_navigation.emit("microsoft-auth-code", code);
-            } else {
-                let _ = app_for_navigation.emit(
+
+    let mut helper_command = hidden_command(helper_path.as_os_str());
+    helper_command
+        .env_remove("WEBVIEW2_USER_DATA_FOLDER")
+        .arg(microsoft_login_url())
+        .arg(&result_path);
+    let mut child = helper_command
+        .spawn()
+        .map_err(|error| format!("Não foi possível abrir o login Microsoft: {error}"))?;
+    let app_for_result = app.clone();
+    std::thread::spawn(move || {
+        for _ in 0..1_200 {
+            if result_path.is_file() {
+                break;
+            }
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        let result = fs::read_to_string(&result_path);
+        let _ = fs::remove_file(&result_path);
+        match result {
+            Ok(value) => match reqwest::Url::parse(value.trim()) {
+                Ok(url) => {
+                    if let Some(code) = url
+                        .query_pairs()
+                        .find_map(|(key, value)| (key == "code").then(|| value.into_owned()))
+                    {
+                        let _ = app_for_result.emit("microsoft-auth-code", code);
+                    } else {
+                        let message = url
+                            .query_pairs()
+                            .find_map(|(key, value)| {
+                                (key == "error_description").then(|| value.into_owned())
+                            })
+                            .unwrap_or_else(|| {
+                                String::from("A Microsoft não retornou um código de autorização.")
+                            });
+                        let _ = app_for_result.emit("microsoft-auth-error", message);
+                    }
+                }
+                Err(_) => {
+                    let _ = app_for_result.emit(
+                        "microsoft-auth-error",
+                        String::from("A Microsoft retornou uma resposta de login inválida."),
+                    );
+                }
+            },
+            Err(_) => {
+                let _ = app_for_result.emit(
                     "microsoft-auth-error",
-                    String::from("A Microsoft não retornou um código de autorização."),
+                    String::from("Login Microsoft cancelado."),
                 );
             }
-            if let Some(window) = app_for_navigation.get_webview_window("microsoft-login") {
-                let _ = window.close();
-            }
-            false
-        } else {
-            true
         }
-    })
-    .build()
-    .map_err(|error| error.to_string())?;
+    });
     Ok(())
 }
 
 #[tauri::command]
 async fn complete_microsoft_login(code: String) -> Result<MicrosoftAccountStatus, String> {
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.3")
+        .user_agent("VEXLauncher/0.4")
         .build()
         .map_err(|error| error.to_string())?;
     let (microsoft_access_token, refresh_token) =
@@ -1167,7 +1211,7 @@ async fn create_instance(
     fs::create_dir_all(&instance_dir).map_err(|error| error.to_string())?;
     let version_id = if clean_loader == "fabric" {
         let client = reqwest::Client::builder()
-            .user_agent("VEXLauncher/0.3")
+            .user_agent("VEXLauncher/0.4")
             .build()
             .map_err(|error| error.to_string())?;
         let loaders: Value = client
@@ -1446,7 +1490,7 @@ async fn ensure_java_runtime(
         false,
     );
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.3")
+        .user_agent("VEXLauncher/0.4")
         .build()
         .map_err(|error| error.to_string())?;
     let assets: Value = client
@@ -2046,7 +2090,7 @@ async fn get_modrinth_install_targets(
     game_version: String,
 ) -> Result<Vec<ModrinthInstallTarget>, String> {
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.3")
+        .user_agent("VEXLauncher/0.4")
         .build()
         .map_err(|error| error.to_string())?;
     let versions: Value = client
@@ -2241,7 +2285,7 @@ async fn install_modrinth_target(
         .and_then(|name| name.to_str())
         .ok_or_else(|| String::from("Nome de arquivo inválido."))?;
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.3")
+        .user_agent("VEXLauncher/0.4")
         .build()
         .map_err(|error| error.to_string())?;
     let bytes = download_bytes_with_progress(
@@ -2321,7 +2365,7 @@ async fn install_modrinth_modpack(
     let settings = read_settings();
     let game_dir = PathBuf::from(&settings.game_directory);
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.3")
+        .user_agent("VEXLauncher/0.4")
         .build()
         .map_err(|error| error.to_string())?;
     let versions: Value = client
@@ -2589,7 +2633,7 @@ async fn launch_instance(
     )
     .map_err(|error| error.to_string())?;
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.3")
+        .user_agent("VEXLauncher/0.4")
         .build()
         .map_err(|error| error.to_string())?;
     let microsoft_account = if settings.use_offline_profile {
@@ -3033,7 +3077,7 @@ async fn start_server(app: tauri::AppHandle) -> Result<ServerStatus, String> {
         .map_err(|error| error.to_string())?;
 
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.3")
+        .user_agent("VEXLauncher/0.4")
         .build()
         .map_err(|error| error.to_string())?;
     let game_dir = PathBuf::from(read_settings().game_directory);

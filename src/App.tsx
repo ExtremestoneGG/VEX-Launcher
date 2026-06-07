@@ -47,7 +47,6 @@ import { projects, type Instance, type Project } from "./data";
 import steveFace from "./assets/steve-face.svg";
 import vexFace from "./assets/vexface.svg";
 import vexLogo from "./assets/vex.svg";
-import vexBanner from "./assets/vex-banner.svg";
 
 type Page = "home" | "library" | "discover" | "server" | "logs" | "settings";
 type DiscoverKind = "Tudo" | "Mods" | "Modpacks" | "Texturas" | "Shaders" | "Plugins";
@@ -76,18 +75,21 @@ function IconButton({ label, children, className = "", onClick }: { label: strin
   return <button className={`icon-button ${className}`} aria-label={label} title={label} onClick={onClick}>{children}</button>;
 }
 
-function BrandMark({ small = false }: { small?: boolean }) {
-  return <span className={`brand-mark ${small ? "small" : ""}`} aria-label="VEX Launcher"><img src={vexFace} alt="" /></span>;
+function BrandMark({ small = false, animated = false }: { small?: boolean; animated?: boolean }) {
+  return <span className={`brand-mark ${small ? "small" : ""} ${animated ? "animated" : ""}`} aria-label="VEX Launcher"><img src={vexFace} alt="" /></span>;
 }
 
 function BootScreen({ progress }: { progress: number }) {
   return (
     <div className="boot-screen">
-      <img className="boot-banner" src={vexBanner} alt="VEX Launcher" />
-      <div className="boot-progress" aria-label={`Abrindo VEX Launcher: ${progress}%`}>
-        <span style={{ width: `${progress}%` }} />
+      <div className="boot-brand">
+        <BrandMark animated />
+        <img className="boot-wordmark" src={vexLogo} alt="VEX Launcher" />
       </div>
-      <b>{progress}%</b>
+      <div className="boot-status"><span>Preparando seu launcher</span><b>{progress}%</b></div>
+      <div className="boot-progress" aria-label={`Abrindo VEX Launcher: ${progress}%`}>
+        <span style={{ width: `${progress}%` }}><i /></span>
+      </div>
     </div>
   );
 }
@@ -181,6 +183,7 @@ function Sidebar({ page, setPage, compact, setCompact, username, skinDataUrl, ac
 }
 
 function Topbar({ page, sidebarOpen, setSidebarOpen, notify }: { page: Page; sidebarOpen: boolean; setSidebarOpen: (v: boolean) => void; notify: (message: string) => void }) {
+  const [brandBurst, setBrandBurst] = useState(0);
   const windowAction = async (action: "minimize" | "toggleMaximize" | "close") => {
     try {
       const command = action === "minimize" ? "minimize_window" : action === "toggleMaximize" ? "toggle_maximize_window" : "close_window";
@@ -196,17 +199,30 @@ function Topbar({ page, sidebarOpen, setSidebarOpen, notify }: { page: Page; sid
   const dragWindow = async (event: React.MouseEvent<HTMLElement>) => {
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
     try {
-      if (event.detail === 2) await invoke("toggle_maximize_window");
-      else await invoke("start_window_dragging");
+      if (event.detail === 2) await getCurrentWindow().toggleMaximize();
+      else await getCurrentWindow().startDragging();
     } catch {
-      // Browser preview has no native window.
+      try {
+        if (event.detail === 2) await invoke("toggle_maximize_window");
+        else await invoke("start_window_dragging");
+      } catch {
+        // Browser preview has no native window.
+      }
     }
   };
   return (
-    <header className="titlebar" data-tauri-drag-region onMouseDown={(event) => void dragWindow(event)}>
-      <div className="titlebar-brand" data-tauri-drag-region><BrandMark small /><img className="titlebar-wordmark" src={vexLogo} alt="VEX Launcher" /></div>
-      <IconButton label="Abrir menu" className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={18} /></IconButton>
-      <div className="breadcrumbs" data-tauri-drag-region><span>{pageMeta[page].eyebrow}</span><ChevronRight size={14} /><b>{pageMeta[page].title}</b></div>
+    <header className="titlebar">
+      <div className="titlebar-drag-surface" data-tauri-drag-region onMouseDown={(event) => void dragWindow(event)} />
+      <div className="titlebar-drag-area" data-tauri-drag-region onMouseDown={(event) => void dragWindow(event)}>
+        <div className="titlebar-brand" data-tauri-drag-region>
+          <button className="brand-trigger" aria-label="Animar logo VEX" title="VEX Launcher" onClick={() => setBrandBurst((current) => current + 1)}>
+            <BrandMark key={brandBurst} small animated={brandBurst > 0} />
+          </button>
+          <img className="titlebar-wordmark" data-tauri-drag-region src={vexLogo} alt="VEX Launcher" />
+        </div>
+        <IconButton label="Abrir menu" className="mobile-menu" onClick={() => setSidebarOpen(!sidebarOpen)}><Menu size={18} /></IconButton>
+        <div className="breadcrumbs" data-tauri-drag-region><span>{pageMeta[page].eyebrow}</span><ChevronRight size={14} /><b>{pageMeta[page].title}</b></div>
+      </div>
       <div className="title-actions">
         <div className="running-state"><span className="status-dot" />Nenhuma instância aberta</div>
         <IconButton label="Notificações" onClick={() => notify("Nenhuma notificação nova")}><Bell size={17} /></IconButton>
@@ -393,29 +409,35 @@ function LibraryPage({ play, appInstances, navigate, refreshInstances, notify }:
 }
 
 function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
-  const [kind, setKind] = useState<DiscoverKind>("Tudo");
+  const [kind, setKind] = useState<DiscoverKind>("Modpacks");
   const [selected, setSelected] = useState<Project | null>(null);
   const [query, setQuery] = useState("");
   const [remoteProjects, setRemoteProjects] = useState<Project[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [sortIndex, setSortIndex] = useState<"relevance" | "downloads" | "updated">("relevance");
+  const [sortIndex, setSortIndex] = useState<"relevance" | "downloads" | "updated">("downloads");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [totalHits, setTotalHits] = useState(0);
   const shown = useMemo(() => remoteProjects ?? projects.filter((project) => kind === "Tudo" || project.kind === kind.slice(0, -1) || project.kind === kind), [kind, remoteProjects]);
+  const totalPages = Math.max(1, Math.ceil(totalHits / pageSize));
+  const visiblePages = useMemo(() => {
+    const start = Math.max(1, Math.min(page - 2, totalPages - 4));
+    return Array.from({ length: Math.min(5, totalPages) }, (_, index) => start + index);
+  }, [page, totalPages]);
   const kindMap: Record<DiscoverKind, string | null> = { Tudo: null, Mods: "mod", Modpacks: "modpack", Texturas: "resourcepack", Shaders: "shader", Plugins: "plugin" };
-  const searchProjects = async (selectedKind = kind, selectedSort = sortIndex) => {
-    if (!query.trim() && selectedKind === "Tudo") {
-      setRemoteProjects(null);
-      setSearchError("");
-      return;
-    }
+  const searchProjects = async (selectedKind = kind, selectedSort = sortIndex, selectedPage = page, selectedPageSize = pageSize) => {
     setLoading(true);
     setSearchError("");
+    setPage(selectedPage);
     try {
       const facets = kindMap[selectedKind] ? `&facets=${encodeURIComponent(JSON.stringify([[`project_type:${kindMap[selectedKind]}`]]))}` : "";
-      const response = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(query.trim())}&limit=20&index=${selectedSort}${facets}`);
+      const offset = (selectedPage - 1) * selectedPageSize;
+      const response = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(query.trim())}&limit=${selectedPageSize}&offset=${offset}&index=${selectedSort}${facets}`);
       if (!response.ok) throw new Error(`Modrinth respondeu ${response.status}`);
-      const data = await response.json() as { hits: Array<Record<string, unknown>> };
+      const data = await response.json() as { hits: Array<Record<string, unknown>>; total_hits?: number };
+      setTotalHits(Number(data.total_hits ?? data.hits.length));
       setRemoteProjects(data.hits.map((hit, index) => ({
         id: String(hit.project_id),
         name: String(hit.title),
@@ -431,10 +453,14 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
     } catch (error) {
       setSearchError(error instanceof Error ? error.message : "Não foi possível pesquisar agora.");
       setRemoteProjects(null);
+      setTotalHits(0);
     } finally {
       setLoading(false);
     }
   };
+  useEffect(() => {
+    void searchProjects("Modpacks", "downloads", 1, 20);
+  }, []);
   const openProject = async (project: Project) => {
     setSelected(project);
     try {
@@ -452,15 +478,21 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
     <div className="discover-page">
       <div className="page-intro discover-intro"><div><span className="overline">Modrinth e fontes compatíveis</span><h1>Descubra seu próximo mundo</h1><p>Conteúdo organizado por compatibilidade, versão e tipo.</p></div></div>
       <div className="discover-toolbar">
-        <div className="search-field large grow"><Search size={19} /><input aria-label="Buscar projetos" placeholder="Buscar mods, modpacks, texturas e shaders..." value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchProjects(); }} /><kbd>Enter</kbd></div>
-        <button className="primary-button search-button" onClick={() => void searchProjects()}><Search size={17} />Buscar</button>
+        <div className="search-field large grow"><Search size={19} /><input aria-label="Buscar projetos" placeholder="Buscar mods, modpacks, texturas e shaders..." value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchProjects(kind, sortIndex, 1); }} /><kbd>Enter</kbd></div>
+        <button className="primary-button search-button" onClick={() => void searchProjects(kind, sortIndex, 1)}><Search size={17} />Buscar</button>
         <button className={`secondary-button ${filtersOpen ? "following" : ""}`} onClick={() => setFiltersOpen(!filtersOpen)}><SlidersHorizontal size={17} />Filtros</button>
       </div>
-      {filtersOpen && <div className="filter-panel"><span>Tipo de conteúdo</span><b>{kind}</b><span>Compatibilidade</span><b>{appInstances.length} instância(s) instalada(s)</b><button className="text-button" onClick={() => { setKind("Tudo"); setQuery(""); setRemoteProjects(null); setFiltersOpen(false); }}>Limpar filtros</button></div>}
+      {filtersOpen && <div className="filter-panel"><span>Tipo de conteúdo</span><b>{kind}</b><span>Compatibilidade</span><b>{appInstances.length} instância(s) instalada(s)</b><button className="text-button" onClick={() => { setKind("Modpacks"); setQuery(""); setSortIndex("downloads"); setFiltersOpen(false); void searchProjects("Modpacks", "downloads", 1); }}>Limpar filtros</button></div>}
       <div className="category-strip">
-        {kinds.map((item) => <button key={item} className={kind === item ? "active" : ""} onClick={() => { setKind(item); void searchProjects(item); }}>{item}</button>)}
+        {kinds.map((item) => <button key={item} className={kind === item ? "active" : ""} onClick={() => { setKind(item); void searchProjects(item, sortIndex, 1); }}>{item}</button>)}
       </div>
-      <div className="results-heading"><div><b>{loading ? "Pesquisando no Modrinth..." : remoteProjects ? `Resultados para “${query || kind}”` : "Recomendados para você"}</b><span>{searchError || `${shown.length} projetos compatíveis`}</span></div><button className="sort-button" onClick={() => { const next = sortIndex === "relevance" ? "downloads" : sortIndex === "downloads" ? "updated" : "relevance"; setSortIndex(next); void searchProjects(kind, next); }}>{sortIndex === "relevance" ? "Mais relevantes" : sortIndex === "downloads" ? "Mais baixados" : "Atualizados"} <ChevronDown size={16} /></button></div>
+      <div className="results-heading">
+        <div><b>{loading ? "Buscando no Modrinth..." : query.trim() ? `Resultados para “${query}”` : kind === "Modpacks" && sortIndex === "downloads" ? "Modpacks populares do momento" : `${kind} em destaque`}</b><span>{searchError || `${totalHits.toLocaleString("pt-BR")} projetos encontrados`}</span></div>
+        <div className="results-controls">
+          <label className="page-size-control">Por página<select aria-label="Itens por página" value={pageSize} onChange={(event) => { const nextSize = Number(event.target.value); setPageSize(nextSize); void searchProjects(kind, sortIndex, 1, nextSize); }}><option value={20}>20</option><option value={40}>40</option><option value={60}>60</option><option value={100}>100</option></select></label>
+          <button className="sort-button" onClick={() => { const next = sortIndex === "relevance" ? "downloads" : sortIndex === "downloads" ? "updated" : "relevance"; setSortIndex(next); void searchProjects(kind, next, 1); }}>{sortIndex === "relevance" ? "Mais relevantes" : sortIndex === "downloads" ? "Mais baixados" : "Atualizados"} <ChevronDown size={16} /></button>
+        </div>
+      </div>
       <div className="project-grid">
         {shown.map((project) => (
           <button className="project-card" key={project.id} onClick={() => void openProject(project)}>
@@ -470,6 +502,12 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
           </button>
         ))}
       </div>
+      {!loading && totalPages > 1 && <nav className="pagination" aria-label="Páginas de resultados">
+        <button aria-label="Página anterior" disabled={page === 1} onClick={() => void searchProjects(kind, sortIndex, page - 1)}><ChevronLeft size={16} /></button>
+        {visiblePages.map((item) => <button key={item} className={item === page ? "active" : ""} aria-current={item === page ? "page" : undefined} onClick={() => void searchProjects(kind, sortIndex, item)}>{item}</button>)}
+        <button aria-label="Próxima página" disabled={page === totalPages} onClick={() => void searchProjects(kind, sortIndex, page + 1)}><ChevronRight size={16} /></button>
+        <span>Página {page} de {totalPages.toLocaleString("pt-BR")}</span>
+      </nav>}
     </div>
   );
 }

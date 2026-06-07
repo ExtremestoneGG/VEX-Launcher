@@ -27,8 +27,17 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Build Microsoft login helper
+        shell: powershell
+        run: .\build-auth-helper.ps1
 
       - name: Check frontend
         run: npm run build

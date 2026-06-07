@@ -3,6 +3,8 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 .tauri/
+auth-helper/bin/
+auth-helper/obj/
 
 # Local launcher data must never be published.
 MineLauncher/
