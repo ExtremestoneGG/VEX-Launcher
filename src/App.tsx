@@ -7,7 +7,9 @@ import {
   ChevronRight,
   CircleHelp,
   Code2,
+  Copy,
   Compass,
+  Clipboard,
   Download,
   FolderOpen,
   Gamepad2,
@@ -25,18 +27,22 @@ import {
   PackagePlus,
   Play,
   Plus,
+  RotateCcw,
   Search,
   Server,
   Settings,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles,
   Square,
+  Sun,
   TerminalSquare,
+  Trash2,
   UserRound,
   Users,
   X,
-  Zap
+  Zap,
+  ZoomIn,
+  ZoomOut
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { useEffect } from "react";
@@ -50,12 +56,13 @@ import vexLogo from "./assets/vex.svg";
 
 type Page = "home" | "library" | "discover" | "server" | "logs" | "settings";
 type DiscoverKind = "Tudo" | "Mods" | "Modpacks" | "Texturas" | "Shaders" | "Plugins";
-type BackendInstance = { id: string; name: string; loader: string; mc_version: string; version_id: string; profile_dir: string; icon_path?: string; kind: string; size_mb: number };
+type BackendInstance = { id: string; name: string; loader: string; mc_version: string; version_id: string; profile_dir: string; icon_path?: string; kind: string; size_mb: number; modified_unix: number; last_played_unix: number };
 type LauncherSettingsResult = { storage_root: string; game_directory: string; offline_username: string; offline_skin_path?: string; use_offline_profile: boolean; onboarding_completed: boolean };
 type MicrosoftAccount = { logged_in: boolean; active: boolean; username: string; uuid: string; skin_url?: string };
 type JavaRuntime = { path: string; major: number };
 type ModrinthInstallTarget = { instance_name: string; game_version: string; loader: string; destination_dir: string; download_url: string; filename: string; sha512?: string };
 type InstanceContent = { name: string; path: string; kind: string; size_mb: number; modified_unix: number };
+type Theme = "dark" | "amoled" | "light" | "contrast";
 type ServerProfile = { name: string; version: string; software: string; memory_gb: number; port: number; max_players: number; motd: string; online_mode: boolean; gamemode: string; difficulty: string; directory: string };
 type ServerStatus = { running: boolean; pid?: number; profile: ServerProfile; log_path: string };
 type OperationProgress = { operation: string; label: string; percent: number; done: boolean };
@@ -168,14 +175,14 @@ function Sidebar({ page, setPage, compact, setCompact, username, skinDataUrl, ac
         <button className="nav-item secondary" onClick={() => setPage("library")}><Plus size={19} /><span>Nova instância</span></button>
       </div>
       <div className="sidebar-bottom">
-        <button className={`nav-item ${page === "settings" ? "active" : ""}`} onClick={() => setPage("settings")}><Settings size={19} /><span>Configurações</span></button>
+        <button className={`nav-item settings-nav-trigger ${page === "settings" ? "active" : ""}`} onClick={() => setPage("settings")}><Settings size={19} /><span>Configurações</span></button>
         <button className="profile-row" onClick={() => setPage("settings")}>
           <SkinFace skinDataUrl={skinDataUrl} label={username} />
           <span className="profile-copy"><b>{username}</b><small>{accountLabel}</small></span>
           <ChevronRight size={17} />
         </button>
         <IconButton label={compact ? "Expandir menu" : "Recolher menu"} className="collapse-sidebar" onClick={() => setCompact(!compact)}>
-          {compact ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+          <ChevronLeft className={compact ? "compact-arrow" : ""} size={18} />
         </IconButton>
       </div>
     </aside>
@@ -184,6 +191,17 @@ function Sidebar({ page, setPage, compact, setCompact, username, skinDataUrl, ac
 
 function Topbar({ page, sidebarOpen, setSidebarOpen, notify }: { page: Page; sidebarOpen: boolean; setSidebarOpen: (v: boolean) => void; notify: (message: string) => void }) {
   const [brandBurst, setBrandBurst] = useState(0);
+  const [bellBurst, setBellBurst] = useState(0);
+  const animateBrand = () => {
+    const next = brandBurst + 1;
+    setBrandBurst(next);
+    if (next % 5 === 0) {
+      const app = document.querySelector(".app-window");
+      app?.classList.remove("vex-shake");
+      window.requestAnimationFrame(() => app?.classList.add("vex-shake"));
+      window.setTimeout(() => app?.classList.remove("vex-shake"), 700);
+    }
+  };
   const windowAction = async (action: "minimize" | "toggleMaximize" | "close") => {
     try {
       const command = action === "minimize" ? "minimize_window" : action === "toggleMaximize" ? "toggle_maximize_window" : "close_window";
@@ -215,7 +233,7 @@ function Topbar({ page, sidebarOpen, setSidebarOpen, notify }: { page: Page; sid
       <div className="titlebar-drag-surface" data-tauri-drag-region onMouseDown={(event) => void dragWindow(event)} />
       <div className="titlebar-drag-area" data-tauri-drag-region onMouseDown={(event) => void dragWindow(event)}>
         <div className="titlebar-brand" data-tauri-drag-region>
-          <button className="brand-trigger" aria-label="Animar logo VEX" title="VEX Launcher" onClick={() => setBrandBurst((current) => current + 1)}>
+          <button className="brand-trigger" aria-label="Animar logo VEX" title="VEX Launcher" onClick={animateBrand}>
             <BrandMark key={brandBurst} small animated={brandBurst > 0} />
           </button>
           <img className="titlebar-wordmark" data-tauri-drag-region src={vexLogo} alt="VEX Launcher" />
@@ -225,7 +243,7 @@ function Topbar({ page, sidebarOpen, setSidebarOpen, notify }: { page: Page; sid
       </div>
       <div className="title-actions">
         <div className="running-state"><span className="status-dot" />Nenhuma instância aberta</div>
-        <IconButton label="Notificações" onClick={() => notify("Nenhuma notificação nova")}><Bell size={17} /></IconButton>
+        <IconButton label="Notificações" className={bellBurst ? "bell-burst" : ""} onClick={() => { setBellBurst((value) => value + 1); notify("Nenhuma notificação nova"); }}><Bell key={bellBurst} size={17} /></IconButton>
         <IconButton label="Minimizar" onClick={() => windowAction("minimize")}><Minus size={16} /></IconButton>
         <IconButton label="Maximizar" onClick={() => windowAction("toggleMaximize")}><Square size={13} /></IconButton>
         <IconButton label="Fechar" className="close" onClick={() => windowAction("close")}><X size={17} /></IconButton>
@@ -246,6 +264,83 @@ function ProjectArt({ project, size = "" }: { project: Project; size?: "large" |
   );
 }
 
+function formatLastPlayed(unix: number, fallback: string) {
+  if (!unix) return fallback;
+  const date = new Date(unix * 1000);
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? `Hoje, ${date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`
+    : date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+function NewInstanceModal({ close, created, notify }: { close: () => void; created: (instance: BackendInstance) => void; notify: (message: string) => void }) {
+  const [name, setName] = useState("Minha aventura");
+  const [loader, setLoader] = useState("fabric");
+  const [version, setVersion] = useState("1.21.4");
+  const [versions, setVersions] = useState<string[]>(["1.21.4", "1.21.1", "1.20.1"]);
+  const [advanced, setAdvanced] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [memory, setMemory] = useState("AUTO (4GB)");
+  useEffect(() => {
+    fetch("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json")
+      .then((response) => response.json())
+      .then((data: { versions?: Array<{ id: string; type: string }> }) => setVersions((data.versions ?? []).filter((item) => item.type === "release").map((item) => item.id)))
+      .catch(() => undefined);
+  }, []);
+  const submit = async () => {
+    if (!name.trim() || !version.trim()) return;
+    setBusy(true);
+    try {
+      const instance = await invoke<BackendInstance>("create_instance", { name, version, loader });
+      created(instance);
+      close();
+    } catch (error) {
+      notify(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="modal-backdrop">
+    <section className="instance-editor-modal" role="dialog" aria-modal="true" aria-labelledby="new-instance-title">
+      <div className="modal-title-row"><div><span className="overline">Biblioteca</span><h1 id="new-instance-title">Criar nova instância</h1></div><IconButton label="Fechar" onClick={close}><X size={18} /></IconButton></div>
+      <div className="instance-editor-icon"><Box size={34} /></div>
+      <label className="form-label">Nome da instância<input value={name} onChange={(event) => setName(event.target.value)} maxLength={64} /></label>
+      <div className="form-label">Loader<div className="loader-tabs">
+        {["vanilla", "fabric", "quilt", "forge", "neoforge"].map((item) => <button key={item} className={loader === item ? "active" : ""} onClick={() => setLoader(item)}>{item === "neoforge" ? "NeoForge" : item.charAt(0).toUpperCase() + item.slice(1)}</button>)}
+      </div></div>
+      <label className="form-label">Versão do Minecraft<select value={version} onChange={(event) => setVersion(event.target.value)}>{versions.map((item) => <option key={item}>{item}</option>)}</select></label>
+      {(loader === "forge" || loader === "neoforge") && <div className="inline-warning">O instalador real de {loader === "forge" ? "Forge" : "NeoForge"} está em preparação. O VEX não criará uma instância Vanilla disfarçada.</div>}
+      <button className="advanced-toggle" onClick={() => setAdvanced(!advanced)}><ChevronRight size={17} />Mais opções</button>
+      {advanced && <div className="advanced-instance-options">
+        <label className="form-label">Memória máxima (RAM)<input value={memory} onChange={(event) => setMemory(event.target.value)} /></label>
+        <label className="check-row"><input type="checkbox" /> Usar pasta separada para esta instância</label>
+        <label className="check-row"><input type="checkbox" defaultChecked /> Ocultar o launcher enquanto o jogo estiver aberto</label>
+        <p>Estas preferências ficarão ligadas à instância e poderão ser alteradas depois.</p>
+      </div>}
+      <div className="modal-actions"><button className="secondary-button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy || loader === "forge" || loader === "neoforge"} onClick={() => void submit()}><Plus size={17} />{busy ? "Criando..." : "Criar instância"}</button></div>
+    </section>
+  </div>;
+}
+
+function DeleteInstanceModal({ instance, close, deleted, notify }: { instance: Instance; close: () => void; deleted: () => void; notify: (message: string) => void }) {
+  const [confirmation, setConfirmation] = useState("");
+  const remove = async () => {
+    try {
+      await invoke("delete_instance", { profileDir: instance.profileDir, confirmation });
+      deleted();
+      close();
+    } catch (error) {
+      notify(String(error));
+    }
+  };
+  return <div className="modal-backdrop"><section className="confirm-modal" role="dialog" aria-modal="true">
+    <span className="danger-symbol"><Trash2 size={24} /></span><h1>Apagar {instance.name}?</h1>
+    <p>Esta ação remove a instância e todo o conteúdo dela. Para confirmar, digite <b>SIM</b> ou <b>YES</b> em letras maiúsculas.</p>
+    <input autoFocus value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="SIM ou YES" />
+    <div className="modal-actions"><button className="secondary-button" onClick={close}>Cancelar</button><button className="danger-button" disabled={confirmation !== "SIM" && confirmation !== "YES"} onClick={() => void remove()}><Trash2 size={16} />Apagar definitivamente</button></div>
+  </section></div>;
+}
+
 function HomePage({ play, username, skinDataUrl, accountLabel, appInstances, navigate, gameDirectory, notify }: { play: (instance: Instance) => void; username: string; skinDataUrl?: string; accountLabel: string; appInstances: Instance[]; navigate: (page: Page) => void; gameDirectory: string; notify: (message: string) => void }) {
   const active = appInstances[0];
   const openGameFolder = async () => {
@@ -256,13 +351,13 @@ function HomePage({ play, username, skinDataUrl, accountLabel, appInstances, nav
     }
   };
   if (!active) {
-    return <div className="page-grid home-grid empty-home"><section className="hero-panel"><div className="hero-copy"><span className="overline"><Sparkles size={14} /> Primeiro passo</span><h1>Boa tarde, {username}.</h1><p>Crie uma instância Vanilla ou Fabric para começar a jogar e instalar conteúdo.</p><div className="hero-actions"><button className="primary-button" onClick={() => navigate("library")}><Plus size={18} />Criar instância</button><button className="secondary-button" onClick={() => navigate("discover")}><Compass size={18} />Descobrir conteúdo</button></div></div></section></div>;
+    return <div className="page-grid home-grid empty-home"><section className="hero-panel"><div className="hero-copy"><span className="overline">Primeiro passo</span><h1>Boa tarde, {username}.</h1><p>Crie uma instância Vanilla, Fabric ou Quilt para começar a jogar e instalar conteúdo.</p><div className="hero-actions"><button className="primary-button" onClick={() => navigate("library")}><Plus size={18} />Criar instância</button><button className="secondary-button" onClick={() => navigate("discover")}><Compass size={18} />Descobrir conteúdo</button></div></div></section></div>;
   }
   return (
     <div className="page-grid home-grid">
       <section className="hero-panel">
         <div className="hero-copy">
-          <span className="overline"><Sparkles size={14} /> Pronto para jogar</span>
+          <span className="overline">Pronto para jogar</span>
           <h1>Boa tarde, {username}.</h1>
           <p>Seu mundo mais recente está pronto. Configurações, perfil e conteúdo já foram verificados.</p>
           <div className="hero-actions">
@@ -308,44 +403,54 @@ function HomePage({ play, username, skinDataUrl, accountLabel, appInstances, nav
   );
 }
 
-function LibraryPage({ play, appInstances, navigate, refreshInstances, notify }: { play: (instance: Instance) => void; appInstances: Instance[]; navigate: (page: Page) => void; refreshInstances: () => Promise<void>; notify: (message: string) => void }) {
+function LibraryPage({ play, appInstances, refreshInstances, notify }: { play: (instance: Instance) => void; appInstances: Instance[]; navigate: (page: Page) => void; refreshInstances: () => Promise<void>; notify: (message: string) => void }) {
   const [selectedId, setSelectedId] = useState(appInstances[0]?.id ?? "");
   const [tab, setTab] = useState("Conteúdo");
   const [query, setQuery] = useState("");
   const [contentQuery, setContentQuery] = useState("");
   const [onlyModded, setOnlyModded] = useState(false);
+  const [contentFilter, setContentFilter] = useState("Todos");
   const [content, setContent] = useState<InstanceContent[]>([]);
+  const [metadata, setMetadata] = useState<Record<string, Project>>({});
+  const [showCreate, setShowCreate] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Instance | null>(null);
+  const [addMode, setAddMode] = useState(false);
+  const [addResults, setAddResults] = useState<Project[]>([]);
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const selected = appInstances.find((instance) => instance.id === selectedId) ?? appInstances[0];
   const filteredInstances = appInstances.filter((instance) => instance.name.toLowerCase().includes(query.toLowerCase()) && (!onlyModded || instance.loader.toLowerCase() !== "vanilla"));
-  const visibleContent = content.filter((item) => item.name.toLowerCase().includes(contentQuery.toLowerCase()));
+  const visibleContent = content.filter((item) => item.name.toLowerCase().includes(contentQuery.toLowerCase()) && (contentFilter === "Todos" || item.kind === contentFilter));
 
-  useEffect(() => {
-    if (!selected?.profileDir) {
-      setContent([]);
-      return;
-    }
-    invoke<InstanceContent[]>("list_instance_content", { profileDir: selected.profileDir, category: tab }).then(setContent).catch((error) => notify(String(error)));
-  }, [selected?.profileDir, tab]);
-
-  const createInstance = async () => {
-    const name = window.prompt("Nome da nova instância:", "Minha aventura")?.trim();
-    if (!name) return;
-    const version = window.prompt("Versão do Minecraft:", "1.21.4")?.trim();
-    if (!version) return;
-    try {
-      const loader = window.prompt("Loader: vanilla ou fabric", "fabric")?.trim().toLowerCase();
-      if (!loader) return;
-      const created = await invoke<BackendInstance>("create_instance", { name, version, loader });
-      await refreshInstances();
-      setSelectedId(created.id);
-      notify(`${created.name} criada`);
-    } catch (error) {
-      notify(`Falha ao criar instância: ${String(error)}`);
-    }
-  };
   const reloadContent = () => {
-    if (selected?.profileDir) invoke<InstanceContent[]>("list_instance_content", { profileDir: selected.profileDir, category: tab }).then(setContent).catch((error) => notify(String(error)));
+    if (!selected?.profileDir) return;
+    invoke<InstanceContent[]>("list_instance_content", { profileDir: selected.profileDir, category: tab }).then(async (items) => {
+      setContent(items);
+      const resolved = await Promise.all(items.slice(0, 30).map(async (item) => {
+        const clean = item.name.replace(/\.(jar|zip)$/i, "").replace(/[-_](fabric|forge|quilt|neoforge|mc)?\d.*$/i, "").replace(/[-_]/g, " ");
+        try {
+          const response = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(clean)}&limit=1`);
+          const data = await response.json() as { hits?: Array<Record<string, unknown>> };
+          const hit = data.hits?.[0];
+          if (!hit) return null;
+          return [item.path, {
+            id: String(hit.project_id), name: String(hit.title), author: String(hit.author), kind: item.kind,
+            description: String(hit.description ?? ""), versions: Array.isArray(hit.versions) ? hit.versions.map(String).slice(-8).reverse() : [],
+            downloads: new Intl.NumberFormat("pt-BR", { notation: "compact" }).format(Number(hit.downloads ?? 0)), color: "#587180", icon: String(hit.title).slice(0, 2),
+            iconUrl: typeof hit.icon_url === "string" ? hit.icon_url : undefined
+          } satisfies Project] as const;
+        } catch { return null; }
+      }));
+      setMetadata(Object.fromEntries(resolved.filter(Boolean) as Array<readonly [string, Project]>));
+    }).catch((error) => notify(String(error)));
   };
+  useEffect(() => {
+    if (!selected?.profileDir) setContent([]);
+    else reloadContent();
+  }, [selected?.profileDir, tab]);
+  useEffect(() => {
+    if (!selectedId && appInstances[0]) setSelectedId(appInstances[0].id);
+  }, [appInstances, selectedId]);
+
   const removeContent = async (item: InstanceContent) => {
     if (!window.confirm(`Remover "${item.name}"?`)) return;
     try {
@@ -356,55 +461,75 @@ function LibraryPage({ play, appInstances, navigate, refreshInstances, notify }:
       notify(`Não foi possível remover: ${String(error)}`);
     }
   };
-
+  const clone = async () => {
+    if (!selected?.profileDir) return;
+    try {
+      await invoke("clone_instance", { profileDir: selected.profileDir });
+      await refreshInstances();
+      notify(`${selected.name} duplicada com segurança`);
+    } catch (error) { notify(String(error)); }
+  };
+  const searchCompatible = async () => {
+    if (!selected) return;
+    try {
+      const facets = encodeURIComponent(JSON.stringify([[`versions:${selected.version}`], ["project_type:mod", "project_type:resourcepack", "project_type:shader"]]));
+      const response = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(contentQuery)}&limit=30&facets=${facets}`);
+      const data = await response.json() as { hits?: Array<Record<string, unknown>> };
+      setAddResults((data.hits ?? []).map((hit) => ({
+        id: String(hit.project_id), name: String(hit.title), author: String(hit.author),
+        kind: String(hit.project_type) === "resourcepack" ? "Textura" : String(hit.project_type) === "shader" ? "Shader" : "Mod",
+        description: String(hit.description ?? ""), versions: Array.isArray(hit.versions) ? hit.versions.map(String).slice(-10).reverse() : [],
+        downloads: new Intl.NumberFormat("pt-BR", { notation: "compact" }).format(Number(hit.downloads ?? 0)), color: "#587180", icon: String(hit.title).slice(0, 2),
+        iconUrl: typeof hit.icon_url === "string" ? hit.icon_url : undefined
+      })));
+    } catch (error) { notify(String(error)); }
+  };
+  if (selectedProject) return <ProjectDetail project={selectedProject} close={() => setSelectedProject(null)} appInstances={selected ? [selected] : appInstances} />;
   return (
-    <div className="library-layout">
-      <section className="instance-list-panel">
-        <div className="page-intro"><div><span className="overline">{appInstances.length} instância(s)</span><h1>Biblioteca</h1></div><button className="primary-button small" onClick={() => void createInstance()}><Plus size={17} />Nova</button></div>
-        <div className="search-field"><Search size={17} /><input aria-label="Buscar instâncias" placeholder="Buscar instâncias..." value={query} onChange={(event) => setQuery(event.target.value)} /><button className={`bare-filter ${onlyModded ? "active" : ""}`} title="Mostrar apenas instâncias com loader" onClick={() => setOnlyModded(!onlyModded)}><SlidersHorizontal size={16} /></button></div>
-        <div className="stack-list">
-          {filteredInstances.map((instance) => (
-            <button className={`instance-list-item ${selected?.id === instance.id ? "active" : ""}`} key={`${instance.id}-${instance.profileDir}`} onClick={() => setSelectedId(instance.id)}>
-              <InstanceIcon instance={instance} />
-              <span className="grow"><b>{instance.name}</b><small>{instance.loader} · {instance.version}</small></span>
-              <span className="item-status">{instance.mods || "Vanilla"}</span>
-            </button>
-          ))}
-          {!filteredInstances.length && <div className="empty-state"><Box size={21} /><span>Nenhuma instância encontrada.</span></div>}
-        </div>
-      </section>
-      <section className="instance-detail">
-        {selected ? <>
-          <div className="instance-detail-head">
-            <InstanceIcon instance={selected} large />
-            <div className="grow"><span className="overline">{selected.loader} · {selected.version}</span><h1>{selected.name}</h1><p>{selected.lastPlayed}</p></div>
-            <button className="primary-button" onClick={() => play(selected)}><Play size={18} fill="currentColor" />Jogar</button>
-            <IconButton label="Abrir pasta da instância" onClick={() => void invoke("open_path", { path: selected.profileDir }).catch((error) => notify(String(error)))}><FolderOpen size={19} /></IconButton>
+    <>
+      {showCreate && <NewInstanceModal close={() => setShowCreate(false)} notify={notify} created={async (instance) => { await refreshInstances(); setSelectedId(instance.id); notify(`${instance.name} criada`); }} />}
+      {deleteTarget && <DeleteInstanceModal instance={deleteTarget} close={() => setDeleteTarget(null)} notify={notify} deleted={async () => { await refreshInstances(); setSelectedId(""); notify("Instância apagada"); }} />}
+      <div className="library-layout">
+        <section className="instance-list-panel">
+          <div className="page-intro"><div><span className="overline">{appInstances.length} instância(s)</span><h1>Biblioteca</h1></div><button className="primary-button small" onClick={() => setShowCreate(true)}><Plus size={17} />Nova</button></div>
+          <div className="search-field"><Search size={17} /><input aria-label="Buscar instâncias" placeholder="Buscar instâncias..." value={query} onChange={(event) => setQuery(event.target.value)} /><button className={`bare-filter ${onlyModded ? "active" : ""}`} title="Mostrar apenas instâncias com loader" onClick={() => setOnlyModded(!onlyModded)}><SlidersHorizontal size={16} /></button></div>
+          <div className="stack-list">
+            {filteredInstances.map((instance) => <button className={`instance-list-item ${selected?.id === instance.id ? "active" : ""}`} key={`${instance.id}-${instance.profileDir}`} onClick={() => { setSelectedId(instance.id); setAddMode(false); }}>
+              <InstanceIcon instance={instance} /><span className="grow"><b>{instance.name}</b><small>{instance.loader} · {instance.version}</small></span><span className="item-status">{instance.mods || "Vanilla"}</span>
+            </button>)}
+            {!filteredInstances.length && <div className="empty-state"><Box size={21} /><span>Nenhuma instância encontrada.</span></div>}
           </div>
-          <div className="tabs">
-            {["Conteúdo", "Mundos", "Capturas", "Logs"].map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{item}</button>)}
-          </div>
-          <div className="content-toolbar">
-            <div className="search-field grow"><Search size={17} /><input aria-label="Buscar conteúdo" placeholder={`Buscar em ${tab.toLowerCase()}...`} value={contentQuery} onChange={(event) => setContentQuery(event.target.value)} /></div>
-            <button className="secondary-button" onClick={() => navigate("discover")}><Download size={17} />Adicionar conteúdo</button>
-            <IconButton label="Atualizar lista" onClick={reloadContent}><ListFilter size={18} /></IconButton>
-          </div>
-          <div className="content-table">
-            <div className="table-head"><span>Nome</span><span>Tamanho</span><span>Tipo</span><span /></div>
-            {visibleContent.map((item) => (
-              <div className="table-row" key={item.path}>
-                <span className="project-icon" style={{ background: "#587180" }}>{item.kind.slice(0, 2)}</span>
-                <button className="grow row-main-button" onClick={() => void invoke("open_path", { path: item.path }).catch((error) => notify(String(error)))}><b>{item.name}</b><small>Abrir no Explorador</small></button>
-                <span className="table-version">{item.size_mb} MB</span>
-                <span className="enabled-state"><span />{item.kind}</span>
+        </section>
+        <section className="instance-detail">
+          {selected ? <>
+            <div className="instance-detail-head"><InstanceIcon instance={selected} large /><div className="grow"><span className="overline">{selected.loader} · {selected.version}</span><h1>{selected.name}</h1><p>{selected.lastPlayed}</p></div>
+              <button className="primary-button" onClick={() => play(selected)}><Play size={18} fill="currentColor" />Jogar</button>
+              <IconButton label="Duplicar instância" onClick={() => void clone()}><Copy size={18} /></IconButton>
+              <IconButton label="Abrir pasta da instância" onClick={() => void invoke("open_path", { path: selected.profileDir }).catch((error) => notify(String(error)))}><FolderOpen size={19} /></IconButton>
+              <IconButton label="Apagar instância" onClick={() => setDeleteTarget(selected)}><Trash2 size={18} /></IconButton>
+            </div>
+            <div className="tabs">{["Conteúdo", "Mundos", "Capturas", "Logs"].map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => { setTab(item); setAddMode(false); }}>{item}</button>)}</div>
+            <div className="content-toolbar">
+              <div className="search-field grow"><Search size={17} /><input aria-label="Buscar conteúdo" placeholder={addMode ? `Buscar conteúdo compatível com ${selected.version}...` : `Buscar em ${tab.toLowerCase()}...`} value={contentQuery} onChange={(event) => setContentQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && addMode) void searchCompatible(); }} /></div>
+              <button className={`secondary-button ${addMode ? "following" : ""}`} onClick={() => { setAddMode(!addMode); setAddResults([]); }}><Download size={17} />{addMode ? "Conteúdo instalado" : "Adicionar conteúdo"}</button>
+              {!addMode && <select className="content-filter-select" value={contentFilter} onChange={(event) => setContentFilter(event.target.value)} aria-label="Filtrar conteúdo"><option>Todos</option><option>Mod</option><option>Textura</option><option>Shader</option><option>Pasta</option></select>}
+              <IconButton label={addMode ? "Buscar compatíveis" : "Atualizar lista"} onClick={addMode ? () => void searchCompatible() : reloadContent}>{addMode ? <Search size={18} /> : <RotateCcw size={18} />}</IconButton>
+            </div>
+            {addMode ? <div className="inline-content-grid">{addResults.map((project) => <button className="inline-content-card" key={project.id} onClick={() => setSelectedProject(project)}><ProjectArt project={project} /><span><b>{project.name}</b><small>{project.kind} · por {project.author}</small><p>{project.description}</p></span><Download size={16} /></button>)}{!addResults.length && <div className="empty-state large-empty"><PackagePlus size={25} /><span>Busque mods, texturas e shaders compatíveis com Minecraft {selected.version}.</span><button className="primary-button small" onClick={() => void searchCompatible()}><Search size={16} />Mostrar compatíveis</button></div>}</div>
+            : <div className="content-table"><div className="table-head"><span>Nome</span><span>Tamanho</span><span>Tipo</span><span /></div>
+              {visibleContent.map((item) => { const project = metadata[item.path]; return <div className="table-row" key={item.path}>
+                <span className="project-icon" style={{ background: project?.color ?? "#587180" }}>{project?.iconUrl ? <img src={project.iconUrl} alt="" /> : item.kind.slice(0, 2)}</span>
+                <button className="grow row-main-button" onClick={() => project ? setSelectedProject(project) : void invoke("open_path", { path: item.path }).catch((error) => notify(String(error)))}><b>{project?.name ?? item.name}</b><small>{project ? "Abrir página do projeto" : "Arquivo local"}</small></button>
+                <span className="table-version">{item.size_mb} MB</span><span className="enabled-state"><span />{item.kind}</span>
+                <IconButton label={`Mostrar ${item.name} na pasta`} onClick={() => void invoke("open_path", { path: item.path }).catch((error) => notify(String(error)))}><FolderOpen size={17} /></IconButton>
                 <IconButton label={`Remover ${item.name}`} onClick={() => void removeContent(item)}><X size={18} /></IconButton>
-              </div>
-            ))}
-            {!visibleContent.length && <div className="empty-state"><Box size={21} /><span>Nenhum item em {tab.toLowerCase()}.</span></div>}
-          </div>
-        </> : <div className="empty-state large-empty"><Box size={28} /><span>Crie uma instância para começar.</span><button className="primary-button" onClick={() => void createInstance()}><Plus size={17} />Nova instância</button></div>}
-      </section>
-    </div>
+              </div>; })}
+              {!visibleContent.length && <div className="empty-state"><Box size={21} /><span>Nenhum item em {tab.toLowerCase()}.</span></div>}
+            </div>}
+          </> : <div className="empty-state large-empty"><Box size={28} /><span>Crie uma instância para começar.</span><button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} />Nova instância</button></div>}
+        </section>
+      </div>
+    </>
   );
 }
 
@@ -656,6 +781,11 @@ function ServerPage({ notify, storageRoot }: { notify: (message: string) => void
           <div className="console-input"><span>&gt;</span><input value={command} onChange={(event) => setCommand(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void send(); }} placeholder={running ? "Digite um comando..." : "Inicie o servidor para usar o console"} disabled={!running} /><button disabled={!running} onClick={() => void send()}>Enviar</button></div>
         </section>
         <aside className="server-side-stack">
+          <section className="section-block server-guide">
+            <div className="section-heading compact"><h2>Como seus amigos entram</h2><CircleHelp size={17} /></div>
+            <ol><li>Crie e inicie o servidor no VEX.</li><li>Crie uma conta gratuita no playit.gg.</li><li>Configure um túnel Minecraft apontando para <b>localhost:{profile.port}</b>.</li><li>Compartilhe o endereço gerado com seus amigos.</li></ol>
+            <button className="secondary-button compact" onClick={() => void invoke("open_url", { url: "https://playit.gg" }).catch((error) => notify(String(error)))}><Globe2 size={15} />Abrir playit.gg</button>
+          </section>
           <section className="section-block">
             <div className="section-heading compact"><h2>Acesso</h2><IconButton label="Abrir pasta do servidor" onClick={() => void invoke("open_path", { path: profile.directory }).catch((error) => notify(String(error)))}><FolderOpen size={16} /></IconButton></div>
             <div className="config-line"><span>Endereço local</span><b>localhost:{profile.port}</b></div><div className="config-line"><span>Conta original</span><b>{profile.online_mode ? "Obrigatória" : "Opcional"}</b></div><div className="empty-state compact-empty"><Users size={22} /><span>Jogadores conectados aparecem no próprio console.</span></div>
@@ -682,6 +812,8 @@ function ServerPage({ notify, storageRoot }: { notify: (message: string) => void
 function LogsPage({ storageRoot }: { storageRoot: string }) {
   const [content, setContent] = useState("Nenhum processo iniciado nesta sessão.");
   const [following, setFollowing] = useState(true);
+  const [fontSize, setFontSize] = useState(9);
+  const consoleRef = useRef<HTMLPreElement>(null);
   const refresh = () => invoke<string>("read_latest_log").then((log) => setContent(log || "O arquivo de log ainda está vazio.")).catch(() => undefined);
   useEffect(() => {
     refresh();
@@ -689,18 +821,21 @@ function LogsPage({ storageRoot }: { storageRoot: string }) {
     const interval = window.setInterval(refresh, 1200);
     return () => window.clearInterval(interval);
   }, [following]);
+  useEffect(() => {
+    if (following && consoleRef.current) consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+  }, [content, following]);
   return (
     <div className="logs-page">
-      <div className="page-intro"><div><span className="overline">Saída ao vivo</span><h1>Console</h1><p>Mensagens do launcher, Minecraft e Java aparecem aqui.</p></div><div className="button-row"><button className={`secondary-button ${following ? "following" : ""}`} onClick={() => setFollowing(!following)}><span className="status-dot" />{following ? "Acompanhando" : "Pausado"}</button><button className="secondary-button" onClick={refresh}><TerminalSquare size={16} />Atualizar</button></div></div>
+      <div className="page-intro"><div><span className="overline">Saída ao vivo</span><h1>Console</h1><p>Mensagens do launcher, Minecraft e Java aparecem aqui.</p></div><div className="button-row"><button className={`secondary-button ${following ? "following" : ""}`} onClick={() => setFollowing(!following)}><span className="status-dot" />{following ? "Acompanhando" : "Pausado"}</button><IconButton label="Diminuir texto" onClick={() => setFontSize(Math.max(7, fontSize - 1))}><ZoomOut size={16} /></IconButton><IconButton label="Aumentar texto" onClick={() => setFontSize(Math.min(18, fontSize + 1))}><ZoomIn size={16} /></IconButton><button className="secondary-button" onClick={() => void navigator.clipboard.writeText(content)}><Clipboard size={16} />Copiar</button><button className="secondary-button" onClick={refresh}><TerminalSquare size={16} />Atualizar</button></div></div>
       <section className="section-block live-console">
         <div className="section-heading compact"><div><span className="overline">{storageRoot}\logs\latest.log</span><h2>Última execução</h2></div><span className="online-label">Somente leitura</span></div>
-        <pre>{content}</pre>
+        <pre ref={consoleRef} style={{ fontSize }}>{content}</pre>
       </section>
     </div>
   );
 }
 
-function SettingsPage({ username, skinDataUrl, onSkinChanged, onSaveProfile, microsoftAccount, useOfflineProfile, onMicrosoftLogin, onUseMicrosoft, onUseOffline, onMicrosoftLogout, storageRoot, gameDirectory, javaRuntimes, onGameDirectoryChanged, notify }: { username: string; skinDataUrl?: string; onSkinChanged: (dataUrl?: string) => void; onSaveProfile: (username: string) => Promise<void>; microsoftAccount: MicrosoftAccount; useOfflineProfile: boolean; onMicrosoftLogin: () => void; onUseMicrosoft: () => void; onUseOffline: () => void; onMicrosoftLogout: () => void; storageRoot: string; gameDirectory: string; javaRuntimes: JavaRuntime[]; onGameDirectoryChanged: (path: string) => void; notify: (message: string) => void }) {
+function SettingsPage({ username, skinDataUrl, onSkinChanged, onSaveProfile, microsoftAccount, useOfflineProfile, onMicrosoftLogin, onUseMicrosoft, onUseOffline, onMicrosoftLogout, storageRoot, gameDirectory, javaRuntimes, onGameDirectoryChanged, notify, theme, onThemeChanged, onOpenTutorial }: { username: string; skinDataUrl?: string; onSkinChanged: (dataUrl?: string) => void; onSaveProfile: (username: string) => Promise<void>; microsoftAccount: MicrosoftAccount; useOfflineProfile: boolean; onMicrosoftLogin: () => void; onUseMicrosoft: () => void; onUseOffline: () => void; onMicrosoftLogout: () => void; storageRoot: string; gameDirectory: string; javaRuntimes: JavaRuntime[]; onGameDirectoryChanged: (path: string) => void; notify: (message: string) => void; theme: Theme; onThemeChanged: (theme: Theme) => void; onOpenTutorial: () => void }) {
   const [draftName, setDraftName] = useState(username);
   const [saved, setSaved] = useState(true);
   const [skinStatus, setSkinStatus] = useState("Nenhuma skin personalizada");
@@ -774,13 +909,34 @@ function SettingsPage({ username, skinDataUrl, onSkinChanged, onSaveProfile, mic
           <button className="logout-button" onClick={() => void logout()}><LogOut size={17} />Redefinir perfil offline</button></>}
           {section === "minecraft" && <section className="settings-group"><div className="settings-heading"><div><h2>Pastas e armazenamento</h2><p>Downloads e instâncias permanecem no disco escolhido.</p></div></div><div className="setting-row"><span><b>Pasta do Minecraft</b><small>{gameDirectory}</small></span><div className="button-row inline"><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: gameDirectory }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button><button className="secondary-button compact" onClick={() => void changeDirectory()}>Alterar</button></div></div><div className="setting-row"><span><b>Cache do launcher</b><small>{storageRoot} · downloads temporários</small></span><button className="secondary-button compact" onClick={() => void clearCache()}>Limpar</button></div><div className="setting-row"><span><b>Java detectado</b><small>{javaRuntimes[0] ? `Java ${javaRuntimes[0].major} · ${javaRuntimes[0].path}` : "Nenhum Java encontrado"}</small></span><button className="secondary-button compact" onClick={() => setSection("advanced")}>Gerenciar</button></div></section>}
           {section === "network" && <section className="settings-group"><div className="settings-heading"><div><h2>Rede e fontes</h2><p>Conteúdo é pesquisado e baixado diretamente de fontes conhecidas.</p></div></div><div className="setting-row"><span><b>Modrinth</b><small>Mods, modpacks, shaders e texturas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://modrinth.com")}>Abrir</button></div><div className="setting-row"><span><b>playit.gg</b><small>Túnel opcional para compartilhar servidores locais</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://playit.gg")}>Abrir</button></div></section>}
-          {section === "appearance" && <section className="settings-group"><div className="settings-heading"><div><h2>Aparência</h2><p>Interface escura, alto contraste e densidade ajustável.</p></div></div><div className="setting-row"><span><b>Modo compacto</b><small>Reduz espaços em listas longas.</small></span><button className="secondary-button compact" onClick={() => { setDense(!dense); document.body.classList.toggle("dense-ui", !dense); }}>{dense ? "Desativar" : "Ativar"}</button></div></section>}
+          {section === "appearance" && <section className="settings-group"><div className="settings-heading"><div><h2>Aparência e acessibilidade</h2><p>Escolha um tema confortável para sua tela e ajuste a densidade.</p></div></div><div className="theme-picker">{([{ id: "dark", label: "Escuro", note: "Padrão equilibrado" }, { id: "amoled", label: "AMOLED", note: "Pretos absolutos" }, { id: "light", label: "Claro", note: "Ambientes iluminados" }, { id: "contrast", label: "Alto contraste", note: "Acessibilidade" }] as Array<{ id: Theme; label: string; note: string }>).map((item) => <button key={item.id} className={theme === item.id ? "active" : ""} onClick={() => onThemeChanged(item.id)}><span className={`theme-swatch ${item.id}`}><Sun size={16} /></span><b>{item.label}</b><small>{item.note}</small></button>)}</div><div className="setting-row"><span><b>Modo compacto</b><small>Reduz espaços em listas longas.</small></span><button className="secondary-button compact" onClick={() => { setDense(!dense); document.body.classList.toggle("dense-ui", !dense); }}>{dense ? "Desativar" : "Ativar"}</button></div></section>}
           {section === "advanced" && <section className="settings-group"><div className="settings-heading"><div><h2>Java detectado</h2><p>O launcher seleciona automaticamente uma versão compatível.</p></div></div>{javaRuntimes.map((runtime) => <div className="setting-row" key={runtime.path}><span><b>Java {runtime.major}</b><small>{runtime.path}</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: runtime.path }).catch((error) => notify(String(error)))}>Abrir</button></div>)}{!javaRuntimes.length && <div className="empty-state"><Code2 size={22} /><span>Nenhum Java encontrado.</span></div>}</section>}
-          {section === "help" && <section className="settings-group"><div className="settings-heading"><div><h2>Ajuda</h2><p>Atalhos para documentação e suporte oficiais.</p></div></div><div className="setting-row"><span><b>Ajuda do Minecraft</b><small>Conta, instalação e solução de problemas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://help.minecraft.net")}>Abrir</button></div><div className="setting-row"><span><b>Pasta de logs</b><small>{storageRoot}\logs</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: `${storageRoot}\\logs` }).catch((error) => notify(String(error)))}>Abrir</button></div></section>}
+          {section === "help" && <section className="settings-group"><div className="settings-heading"><div><h2>Ajuda</h2><p>Tutoriais, documentação e diagnóstico.</p></div></div><div className="setting-row"><span><b>Tutorial do VEX</b><small>Veja novamente o guia completo do launcher.</small></span><button className="secondary-button compact" onClick={onOpenTutorial}>Iniciar tutorial</button></div><div className="setting-row"><span><b>Ajuda do Minecraft</b><small>Conta, instalação e solução de problemas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://help.minecraft.net")}>Abrir</button></div><div className="setting-row"><span><b>Pasta de logs</b><small>{storageRoot}\logs</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: `${storageRoot}\\logs` }).catch((error) => notify(String(error)))}>Abrir</button></div></section>}
         </div>
       </div>
     </div>
   );
+}
+
+const tutorialSteps: Array<{ page: Page; title: string; text: string }> = [
+  { page: "home", title: "Seu ponto de partida", text: "O Início mostra o perfil ativo, a última instância jogada e ações rápidas." },
+  { page: "library", title: "Sua biblioteca", text: "Crie, clone, configure e apague instâncias. Abra uma instância para cuidar dos mundos e conteúdos dela." },
+  { page: "discover", title: "Descobrir conteúdo", text: "Pesquise no Modrinth, veja todas as versões e instale apenas em instâncias compatíveis." },
+  { page: "server", title: "Servidor local", text: "Crie e controle seu servidor. Para amigos entrarem pela internet, o caminho mais simples é configurar um túnel no playit.gg." },
+  { page: "logs", title: "Console e diagnóstico", text: "Acompanhe o Java em tempo real, copie o log e ajuste o tamanho do texto para investigar erros." },
+  { page: "settings", title: "Conta e preferências", text: "Troque perfil, skin, tema, pasta do jogo e veja novamente este tutorial." }
+];
+
+function TutorialOverlay({ initialPage, navigate, close }: { initialPage: Page; navigate: (page: Page) => void; close: () => void }) {
+  const initial = Math.max(0, tutorialSteps.findIndex((step) => step.page === initialPage));
+  const [step, setStep] = useState(initial);
+  const current = tutorialSteps[step];
+  useEffect(() => navigate(current.page), [step]);
+  const finish = () => {
+    localStorage.setItem("vex-tutorial-completed", "true");
+    close();
+  };
+  return <div className="tutorial-overlay"><section className="tutorial-card"><span className="tutorial-count">{step + 1} / {tutorialSteps.length}</span><CircleHelp size={25} /><span className="overline">Guia do VEX</span><h1>{current.title}</h1><p>{current.text}</p><div className="tutorial-progress">{tutorialSteps.map((_, index) => <span key={index} className={index <= step ? "active" : ""} />)}</div><div className="modal-actions"><button className="text-button" onClick={finish}>Pular tutorial</button>{step > 0 && <button className="secondary-button" onClick={() => setStep(step - 1)}>Voltar</button>}<button className="primary-button" onClick={() => step === tutorialSteps.length - 1 ? finish() : setStep(step + 1)}>{step === tutorialSteps.length - 1 ? "Concluir" : "Próximo"}<ChevronRight size={16} /></button></div></section></div>;
 }
 
 function App() {
@@ -794,6 +950,7 @@ function App() {
   const [username, setUsername] = useState("Player");
   const [skinDataUrl, setSkinDataUrl] = useState<string>();
   const [microsoftAccount, setMicrosoftAccount] = useState<MicrosoftAccount>({ logged_in: false, active: false, username: "", uuid: "" });
+  const [microsoftSkinDataUrl, setMicrosoftSkinDataUrl] = useState<string>();
   const [useOfflineProfile, setUseOfflineProfile] = useState(true);
   const [onboardingCompleted, setOnboardingCompleted] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
@@ -801,6 +958,8 @@ function App() {
   const [storageRoot, setStorageRoot] = useState("D:\\MineLauncher");
   const [gameDirectory, setGameDirectory] = useState("D:\\.minecraft");
   const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntime[]>([]);
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("vex-theme") as Theme) || "dark");
+  const [tutorialOpen, setTutorialOpen] = useState(false);
   const notify = (message: string, duration = 3200) => {
     setToast(message);
     window.setTimeout(() => setToast(""), duration);
@@ -844,7 +1003,13 @@ function App() {
         }
       }
       const account = await invoke<MicrosoftAccount>("get_microsoft_account").catch(() => null);
-      if (mounted && account) setMicrosoftAccount(account);
+      if (mounted && account) {
+        setMicrosoftAccount(account);
+        if (account.logged_in) {
+          const cachedSkin = await invoke<string | null>("get_microsoft_skin_data_url").catch(() => null);
+          if (mounted && cachedSkin) setMicrosoftSkinDataUrl(cachedSkin);
+        }
+      }
       setBootProgress(44);
       await refreshInstances().catch(() => undefined);
       if (!mounted) return;
@@ -856,6 +1021,8 @@ function App() {
       finishTimer = window.setTimeout(() => mounted && setBooting(false), 320);
     };
     void initialize();
+    const preventContextMenu = (event: MouseEvent) => event.preventDefault();
+    window.addEventListener("contextmenu", preventContextMenu);
     const unlistenPromises = isTauri()
       ? [listen<OperationProgress>("operation-progress", ({ payload }) => {
           if (!mounted) return;
@@ -870,6 +1037,8 @@ function App() {
             const account = await invoke<MicrosoftAccount>("complete_microsoft_login", { code: payload });
             if (!mounted) return;
             setMicrosoftAccount(account);
+            const cachedSkin = await invoke<string | null>("get_microsoft_skin_data_url").catch(() => null);
+            if (mounted && cachedSkin) setMicrosoftSkinDataUrl(cachedSkin);
             setUseOfflineProfile(false);
             setOnboardingCompleted(true);
             notify(`Conta Microsoft ${account.username} conectada`, 5200);
@@ -887,9 +1056,17 @@ function App() {
     return () => {
       mounted = false;
       window.clearTimeout(finishTimer);
+      window.removeEventListener("contextmenu", preventContextMenu);
       for (const unlistenPromise of unlistenPromises) void unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("vex-theme", theme);
+  }, [theme]);
+  useEffect(() => {
+    if (!booting && onboardingCompleted && localStorage.getItem("vex-tutorial-completed") !== "true") setTutorialOpen(true);
+  }, [booting, onboardingCompleted]);
   const saveProfile = async (newUsername: string) => {
     setUsername(newUsername);
     setUseOfflineProfile(true);
@@ -909,10 +1086,10 @@ function App() {
     }
   };
   const chooseOffline = async () => {
+    setUseOfflineProfile(true);
+    setOnboardingCompleted(true);
     try {
       await invoke("choose_offline_mode");
-      setUseOfflineProfile(true);
-      setOnboardingCompleted(true);
       notify(`Perfil offline ${username} ativo`);
     } catch (error) {
       notify(String(error));
@@ -922,6 +1099,8 @@ function App() {
     try {
       const account = await invoke<MicrosoftAccount>("use_microsoft_account");
       setMicrosoftAccount(account);
+      const cachedSkin = await invoke<string | null>("get_microsoft_skin_data_url").catch(() => null);
+      if (cachedSkin) setMicrosoftSkinDataUrl(cachedSkin);
       setUseOfflineProfile(false);
       setOnboardingCompleted(true);
       notify(`Conta Microsoft ${account.username} ativa`);
@@ -934,6 +1113,7 @@ function App() {
     try {
       const account = await invoke<MicrosoftAccount>("logout_microsoft_account");
       setMicrosoftAccount(account);
+      setMicrosoftSkinDataUrl(undefined);
       setUseOfflineProfile(true);
       notify("Conta Microsoft removida deste computador");
     } catch (error) {
@@ -949,18 +1129,21 @@ function App() {
     try {
       await invoke("launch_instance", { versionId: instance.versionId, profileDir: instance.profileDir });
       notify(`${instance.name} iniciado`, 6500);
+      await refreshInstances().catch(() => undefined);
+      await invoke("minimize_window").catch(() => undefined);
     } catch (error) {
       notify(`Falha: ${String(error)}`, 6500);
     }
   };
   const navigate = (next: Page) => { setPage(next); setSidebarOpen(false); };
   const activeUsername = !useOfflineProfile && microsoftAccount.logged_in ? microsoftAccount.username : username;
-  const activeSkin = !useOfflineProfile && microsoftAccount.logged_in ? microsoftAccount.skin_url : skinDataUrl;
+  const activeSkin = !useOfflineProfile && microsoftAccount.logged_in ? (microsoftSkinDataUrl ?? microsoftAccount.skin_url) : skinDataUrl;
   const accountLabel = !useOfflineProfile && microsoftAccount.logged_in ? "Conta Microsoft" : "Perfil offline";
   return (
     <div className="app-window">
       {booting && <BootScreen progress={bootProgress} />}
       {!booting && !onboardingCompleted && <AccountChoiceModal onOffline={() => void chooseOffline()} onMicrosoft={() => void beginMicrosoftLogin()} busy={authBusy} />}
+      {!booting && onboardingCompleted && tutorialOpen && <TutorialOverlay initialPage={page} navigate={navigate} close={() => setTutorialOpen(false)} />}
       <Topbar page={page} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} notify={notify} />
       <div className="app-body">
         <div className={`sidebar-mobile-wrap ${sidebarOpen ? "open" : ""}`}><Sidebar page={page} setPage={navigate} compact={compact} setCompact={setCompact} username={activeUsername} skinDataUrl={activeSkin} accountLabel={accountLabel} appInstances={appInstances} /></div>
@@ -970,9 +1153,10 @@ function App() {
           {page === "discover" && <DiscoverPage appInstances={appInstances} />}
           {page === "server" && <ServerPage notify={notify} storageRoot={storageRoot} />}
           {page === "logs" && <LogsPage storageRoot={storageRoot} />}
-          {page === "settings" && <SettingsPage username={username} skinDataUrl={skinDataUrl} onSkinChanged={setSkinDataUrl} onSaveProfile={saveProfile} microsoftAccount={microsoftAccount} useOfflineProfile={useOfflineProfile} onMicrosoftLogin={() => void beginMicrosoftLogin()} onUseMicrosoft={() => void useMicrosoft()} onUseOffline={() => void chooseOffline()} onMicrosoftLogout={() => void logoutMicrosoft()} storageRoot={storageRoot} gameDirectory={gameDirectory} javaRuntimes={javaRuntimes} onGameDirectoryChanged={setGameDirectory} notify={notify} />}
+          {page === "settings" && <SettingsPage username={username} skinDataUrl={skinDataUrl} onSkinChanged={setSkinDataUrl} onSaveProfile={saveProfile} microsoftAccount={microsoftAccount} useOfflineProfile={useOfflineProfile} onMicrosoftLogin={() => void beginMicrosoftLogin()} onUseMicrosoft={() => void useMicrosoft()} onUseOffline={() => void chooseOffline()} onMicrosoftLogout={() => void logoutMicrosoft()} storageRoot={storageRoot} gameDirectory={gameDirectory} javaRuntimes={javaRuntimes} onGameDirectoryChanged={setGameDirectory} notify={notify} theme={theme} onThemeChanged={setTheme} onOpenTutorial={() => setTutorialOpen(true)} />}
         </main>
       </div>
+      {!booting && onboardingCompleted && !tutorialOpen && <button className="floating-help" aria-label="Abrir tutorial desta área" title="Ajuda e tutorial" onClick={() => setTutorialOpen(true)}><CircleHelp size={20} /></button>}
       {operationProgress && <ProgressPanel progress={operationProgress} />}
       {toast && <div className="toast"><span className="toast-spinner" /><span><b>{toast}</b><small>Verificando arquivos e perfil</small></span><ChevronRight size={17} /></div>}
     </div>

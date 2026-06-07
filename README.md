@@ -4,24 +4,32 @@ VEX is an open-source Minecraft launcher built with Tauri 2, React, TypeScript,
 and Rust. It focuses on a clear desktop experience, local-first player data,
 Modrinth content, and simple local servers.
 
-## Current features
+## VEX 0.5
 
 - Frameless VEX interface with visible progress for long operations.
 - Saved offline profile and skin shared across instances.
 - First-run account choice and integrated official Microsoft, Xbox Live, and
   Minecraft authentication.
-- Official Microsoft profile name and skin automatically used when that
-  account is active.
-- Vanilla and Fabric instances, worlds, logs, screenshots, mods, shaders, and
-  resource packs.
+- Official Microsoft profile name and cached skin face automatically used when
+  that account is active.
+- Vanilla, Fabric, and Quilt instances with real recent-played history.
+- Clone and protected deletion of instances, plus inline compatible-content
+  search inside the Library.
+- Worlds, logs, screenshots, mods, shaders, and resource packs with filters,
+  project pages, reveal-in-folder actions, and project artwork.
 - Modrinth search, project pages, compatible versions, SHA-512 verification,
   and `.mrpack` installation.
 - Automatic compatible Java download from Eclipse Adoptium when Java is
   missing. Runtimes stay isolated inside the VEX data folder.
 - Local Vanilla, Paper, and Fabric servers with an interactive console.
+- Guided first-run tutorial, server/playit.gg guide, console zoom/copy/follow,
+  and Dark, AMOLED, Light, and High Contrast themes.
+- Current-user installer and a portable executable that does not require
+  installation or administrator access.
 - Installer and launcher icon branded for VEX.
 
-Forge, NeoForge, and Quilt installers are still in development.
+Forge and NeoForge installers are still in development. VEX deliberately does
+not present a Vanilla profile as one of those loaders.
 
 ## Privacy and security
 
@@ -38,7 +46,7 @@ npm install
 npm run tauri dev
 ```
 
-The portable helper used by this development machine is also available:
+The portable development helper is also available:
 
 ```powershell
 .\dev-portable.ps1
@@ -50,7 +58,9 @@ The portable helper used by this development machine is also available:
 .\build-portable.ps1
 ```
 
-The standard installer output is:
+The build creates both the standard installer and `VEX Launcher Portable.exe`.
+The portable executable extracts its Microsoft login component into the local
+VEX data folder only when needed.
 
 `src-tauri\target\release\bundle\nsis`
 

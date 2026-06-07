@@ -20,3 +20,8 @@ if (Test-Path -LiteralPath $tools) {
     & (Join-Path $PSScriptRoot "build-auth-helper.ps1")
     npm run tauri -- build
 }
+
+$releaseRoot = if ($env:CARGO_TARGET_DIR) { Join-Path $env:CARGO_TARGET_DIR "release" } else { Join-Path $PSScriptRoot "src-tauri\target\release" }
+$portableOutput = Join-Path $releaseRoot "VEX Launcher Portable.exe"
+Copy-Item -LiteralPath (Join-Path $releaseRoot "vex-launcher.exe") -Destination $portableOutput -Force
+Write-Host "Portable: $portableOutput"

@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{Mutex, OnceLock},
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::Emitter;
 use tauri::Manager;
@@ -39,7 +39,6 @@ fn storage_root() -> PathBuf {
         .unwrap_or_else(|_| env::temp_dir())
         .join("VEX Launcher")
 }
-
 fn default_game_directory() -> PathBuf {
     if Path::new(r"D:\").is_dir() {
         return PathBuf::from(r"D:\.minecraft");
@@ -224,7 +223,9 @@ struct AuthenticatedMicrosoftAccount {
 }
 
 fn microsoft_account_path() -> PathBuf {
-    storage_root().join("profiles").join("microsoft-account.json")
+    storage_root()
+        .join("profiles")
+        .join("microsoft-account.json")
 }
 
 #[cfg(windows)]
@@ -372,6 +373,7 @@ struct InstalledInstance {
     kind: String,
     size_mb: f64,
     modified_unix: u64,
+    last_played_unix: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -545,6 +547,45 @@ fn microsoft_login_url() -> String {
     format!(
         "https://login.live.com/oauth20_authorize.srf?client_id={MICROSOFT_CLIENT_ID}&response_type=code&scope=XboxLive.signin%20offline_access&redirect_uri=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf"
     )
+}
+
+#[cfg(windows)]
+fn ensure_embedded_auth_helper() -> Result<PathBuf, String> {
+    let directory = storage_root().join("auth-helper");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let files: [(&str, &[u8]); 5] = [
+        (
+            "VexMicrosoftAuth.exe",
+            include_bytes!("../resources/auth-helper/VexMicrosoftAuth.exe"),
+        ),
+        (
+            "VexMicrosoftAuth.exe.config",
+            include_bytes!("../resources/auth-helper/VexMicrosoftAuth.exe.config"),
+        ),
+        (
+            "Microsoft.Web.WebView2.Core.dll",
+            include_bytes!("../resources/auth-helper/Microsoft.Web.WebView2.Core.dll"),
+        ),
+        (
+            "Microsoft.Web.WebView2.WinForms.dll",
+            include_bytes!("../resources/auth-helper/Microsoft.Web.WebView2.WinForms.dll"),
+        ),
+        (
+            "WebView2Loader.dll",
+            include_bytes!("../resources/auth-helper/WebView2Loader.dll"),
+        ),
+    ];
+    for (name, bytes) in files {
+        let path = directory.join(name);
+        if fs::metadata(&path)
+            .map(|metadata| metadata.len())
+            .unwrap_or_default()
+            != bytes.len() as u64
+        {
+            fs::write(path, bytes).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(directory.join("VexMicrosoftAuth.exe"))
 }
 
 fn microsoft_auth_error(value: &Value, fallback: &str) -> String {
@@ -779,6 +820,33 @@ fn get_microsoft_account() -> MicrosoftAccountStatus {
 }
 
 #[tauri::command]
+async fn get_microsoft_skin_data_url() -> Result<Option<String>, String> {
+    let Some(url) = read_microsoft_account().and_then(|account| account.skin_url) else {
+        return Ok(None);
+    };
+    if !url.starts_with("https://") {
+        return Err(String::from("URL de skin Microsoft inválida."));
+    }
+    let bytes = reqwest::Client::builder()
+        .user_agent("VEXLauncher/0.5")
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .bytes()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Some(format!(
+        "data:image/png;base64,{}",
+        BASE64_STANDARD.encode(bytes)
+    )))
+}
+
+#[tauri::command]
 fn begin_microsoft_login(app: tauri::AppHandle) -> Result<(), String> {
     let helper_name = "VexMicrosoftAuth.exe";
     let resource_helper = app
@@ -796,9 +864,16 @@ fn begin_microsoft_login(app: tauri::AppHandle) -> Result<(), String> {
     } else if development_helper.is_file() {
         development_helper
     } else {
-        return Err(String::from(
-            "O componente seguro de login Microsoft não foi encontrado. Reinstale o VEX Launcher.",
-        ));
+        #[cfg(windows)]
+        {
+            ensure_embedded_auth_helper()?
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(String::from(
+                "O login Microsoft integrado ainda está disponível apenas no Windows.",
+            ));
+        }
     };
 
     let auth_dir = storage_root().join("auth");
@@ -871,7 +946,7 @@ fn begin_microsoft_login(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn complete_microsoft_login(code: String) -> Result<MicrosoftAccountStatus, String> {
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.4")
+        .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?;
     let (microsoft_access_token, refresh_token) =
@@ -1098,6 +1173,10 @@ fn list_installed_instances() -> Vec<InstalledInstance> {
                 kind: String::from("modpack"),
                 size_mb: (directory_size(&dir) as f64 / 1_048_576.0 * 10.0).round() / 10.0,
                 modified_unix: modified_unix(&dir),
+                last_played_unix: json
+                    .get("LastPlayedUnix")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
             });
         }
     }
@@ -1143,10 +1222,18 @@ fn list_installed_instances() -> Vec<InstalledInstance> {
                     .to_owned(),
                 version_id,
                 profile_dir: dir.to_string_lossy().into_owned(),
-                icon_path: None,
+                icon_path: json
+                    .get("IconPath")
+                    .and_then(Value::as_str)
+                    .filter(|path| Path::new(path).exists())
+                    .map(str::to_owned),
                 kind: String::from("instance"),
                 size_mb: (directory_size(&dir) as f64 / 1_048_576.0 * 10.0).round() / 10.0,
                 modified_unix: modified_unix(&dir),
+                last_played_unix: json
+                    .get("LastPlayedUnix")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
             });
         }
     }
@@ -1182,11 +1269,17 @@ fn list_installed_instances() -> Vec<InstalledInstance> {
                 kind: String::from("version"),
                 size_mb: (directory_size(&dir) as f64 / 1_048_576.0 * 10.0).round() / 10.0,
                 modified_unix: modified_unix(&dir),
+                last_played_unix: 0,
             });
         }
     }
 
-    instances.sort_by(|left, right| right.modified_unix.cmp(&left.modified_unix));
+    instances.sort_by(|left, right| {
+        right
+            .last_played_unix
+            .max(right.modified_unix)
+            .cmp(&left.last_played_unix.max(left.modified_unix))
+    });
     instances
 }
 
@@ -1202,8 +1295,10 @@ async fn create_instance(
     if clean_name.is_empty() || clean_version.is_empty() {
         return Err(String::from("Informe um nome e uma versão."));
     }
-    if clean_loader != "vanilla" && clean_loader != "fabric" {
-        return Err(String::from("Escolha vanilla ou fabric."));
+    if !["vanilla", "fabric", "quilt"].contains(&clean_loader.as_str()) {
+        return Err(String::from(
+            "Forge e NeoForge exigem o instalador oficial e ainda não estão prontos nesta versão. Escolha Vanilla, Fabric ou Quilt.",
+        ));
     }
     let settings = read_settings();
     let game_dir = PathBuf::from(&settings.game_directory);
@@ -1211,7 +1306,7 @@ async fn create_instance(
     fs::create_dir_all(&instance_dir).map_err(|error| error.to_string())?;
     let version_id = if clean_loader == "fabric" {
         let client = reqwest::Client::builder()
-            .user_agent("VEXLauncher/0.4")
+            .user_agent("VEXLauncher/0.5")
             .build()
             .map_err(|error| error.to_string())?;
         let loaders: Value = client
@@ -1234,6 +1329,12 @@ async fn create_instance(
             .and_then(Value::as_str)
             .ok_or_else(|| format!("Fabric não está disponível para Minecraft {clean_version}."))?;
         install_fabric_profile(&client, &game_dir, clean_version, loader_version).await?
+    } else if clean_loader == "quilt" {
+        let client = reqwest::Client::builder()
+            .user_agent("VEXLauncher/0.5")
+            .build()
+            .map_err(|error| error.to_string())?;
+        install_quilt_profile(&client, &game_dir, clean_version).await?
     } else {
         clean_version.to_owned()
     };
@@ -1261,6 +1362,7 @@ async fn create_instance(
         kind: String::from("instance"),
         size_mb: 0.0,
         modified_unix: modified_unix(&instance_dir),
+        last_played_unix: 0,
     })
 }
 
@@ -1349,6 +1451,119 @@ fn remove_instance_content(path: String) -> Result<(), String> {
     } else {
         fs::remove_file(target).map_err(|error| error.to_string())
     }
+}
+
+fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let target = destination.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_directory(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn validated_instance_dir(profile_dir: &str) -> Result<PathBuf, String> {
+    let settings = read_settings();
+    let game_dir = fs::canonicalize(&settings.game_directory)
+        .unwrap_or_else(|_| PathBuf::from(&settings.game_directory));
+    let target = fs::canonicalize(profile_dir).map_err(|error| error.to_string())?;
+    if !target.starts_with(&game_dir)
+        || target == game_dir
+        || !target.join("instance.json").is_file()
+    {
+        return Err(String::from(
+            "Instância inválida ou fora da pasta do Minecraft.",
+        ));
+    }
+    Ok(target)
+}
+
+#[tauri::command]
+fn delete_instance(profile_dir: String, confirmation: String) -> Result<(), String> {
+    if confirmation.trim() != "SIM" && confirmation.trim() != "YES" {
+        return Err(String::from(
+            "Digite SIM ou YES em letras maiúsculas para confirmar.",
+        ));
+    }
+    let target = validated_instance_dir(&profile_dir)?;
+    fs::remove_dir_all(target).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn clone_instance(profile_dir: String) -> Result<String, String> {
+    let source = validated_instance_dir(&profile_dir)?;
+    let base_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("instancia");
+    let parent = source
+        .parent()
+        .ok_or_else(|| String::from("Pasta da instância inválida."))?;
+    let mut index = 1;
+    let destination = loop {
+        let suffix = if index == 1 {
+            String::from(" - Copia")
+        } else {
+            format!(" - Copia {index}")
+        };
+        let candidate = parent.join(format!("{base_name}{suffix}"));
+        if !candidate.exists() {
+            break candidate;
+        }
+        index += 1;
+    };
+    copy_directory(&source, &destination)?;
+    let metadata_path = destination.join("instance.json");
+    if let Ok(raw) = fs::read_to_string(&metadata_path) {
+        if let Ok(mut metadata) = serde_json::from_str::<Value>(&raw) {
+            let original_name = metadata
+                .get("Name")
+                .and_then(Value::as_str)
+                .unwrap_or(base_name)
+                .to_owned();
+            metadata["Name"] = Value::String(format!("{original_name} - Cópia"));
+            metadata["Id"] = Value::String(format!(
+                "local-{}",
+                safe_directory_name(&format!("{original_name}-copia"))
+                    .to_lowercase()
+                    .replace(' ', "-")
+            ));
+            metadata["LastPlayedUnix"] = Value::from(0_u64);
+            fs::write(
+                metadata_path,
+                serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(destination.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn set_instance_icon(profile_dir: String, bytes: Vec<u8>) -> Result<String, String> {
+    let target = validated_instance_dir(&profile_dir)?;
+    if bytes.len() > 8 * 1024 * 1024 || !bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]) {
+        return Err(String::from("Use uma imagem PNG de até 8 MB."));
+    }
+    let icon_path = target.join("icon.png");
+    fs::write(&icon_path, bytes).map_err(|error| error.to_string())?;
+    let metadata_path = target.join("instance.json");
+    let mut metadata: Value = serde_json::from_str(
+        &fs::read_to_string(&metadata_path).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    metadata["IconPath"] = Value::String(icon_path.to_string_lossy().into_owned());
+    fs::write(
+        metadata_path,
+        serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(icon_path.to_string_lossy().into_owned())
 }
 
 fn collect_java_in_dir(root: &Path, depth: usize, output: &mut Vec<PathBuf>) {
@@ -1490,7 +1705,7 @@ async fn ensure_java_runtime(
         false,
     );
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.4")
+        .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?;
     let assets: Value = client
@@ -2090,7 +2305,7 @@ async fn get_modrinth_install_targets(
     game_version: String,
 ) -> Result<Vec<ModrinthInstallTarget>, String> {
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.4")
+        .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?;
     let versions: Value = client
@@ -2285,7 +2500,7 @@ async fn install_modrinth_target(
         .and_then(|name| name.to_str())
         .ok_or_else(|| String::from("Nome de arquivo inválido."))?;
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.4")
+        .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?;
     let bytes = download_bytes_with_progress(
@@ -2352,6 +2567,44 @@ async fn install_fabric_profile(
     Ok(profile_id)
 }
 
+async fn install_quilt_profile(
+    client: &reqwest::Client,
+    game_dir: &Path,
+    minecraft: &str,
+) -> Result<String, String> {
+    let loaders: Value = client
+        .get(format!(
+            "https://meta.quiltmc.org/v3/versions/loader/{minecraft}"
+        ))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    let loader = loaders
+        .as_array()
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("loader"))
+        .and_then(|item| item.get("version"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("Quilt não está disponível para Minecraft {minecraft}."))?;
+    let profile_id = format!("quilt-loader-{loader}-{minecraft}");
+    let destination = game_dir
+        .join("versions")
+        .join(&profile_id)
+        .join(format!("{profile_id}.json"));
+    if !destination.is_file() {
+        let url = format!(
+            "https://meta.quiltmc.org/v3/versions/loader/{minecraft}/{loader}/profile/json"
+        );
+        download_to(client, &url, &destination).await?;
+    }
+    Ok(profile_id)
+}
+
 #[tauri::command]
 async fn install_modrinth_modpack(
     app: tauri::AppHandle,
@@ -2365,7 +2618,7 @@ async fn install_modrinth_modpack(
     let settings = read_settings();
     let game_dir = PathBuf::from(&settings.game_directory);
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.4")
+        .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?;
     let versions: Value = client
@@ -2610,6 +2863,7 @@ async fn install_modrinth_modpack(
         kind: String::from("modpack"),
         size_mb: (directory_size(&instance_dir) as f64 / 1_048_576.0 * 10.0).round() / 10.0,
         modified_unix: modified_unix(&instance_dir),
+        last_played_unix: 0,
     })
 }
 
@@ -2627,13 +2881,10 @@ async fn launch_instance(
     let logs_dir = storage_root().join("logs");
     fs::create_dir_all(&logs_dir).map_err(|error| error.to_string())?;
     let log_path = logs_dir.join("latest.log");
-    fs::write(
-        &log_path,
-        format!("[Launcher] Preparando {version_id}\n"),
-    )
-    .map_err(|error| error.to_string())?;
+    fs::write(&log_path, format!("[Launcher] Preparando {version_id}\n"))
+        .map_err(|error| error.to_string())?;
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.4")
+        .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?;
     let microsoft_account = if settings.use_offline_profile {
@@ -2676,8 +2927,8 @@ async fn launch_instance(
     fs::create_dir_all(profile_dir.join("mods")).map_err(|error| error.to_string())?;
     if settings.use_offline_profile {
         if let Some(skin) = settings.offline_skin_path.as_deref() {
-        append_log(&log_path, "Aplicando skin offline global.");
-        apply_offline_skin(Path::new(skin), &profile_dir)?;
+            append_log(&log_path, "Aplicando skin offline global.");
+            apply_offline_skin(Path::new(skin), &profile_dir)?;
         }
     }
 
@@ -2740,7 +2991,7 @@ async fn launch_instance(
             natives_dir.to_string_lossy()
         ))
         .arg("-Dminecraft.launcher.brand=VEXLauncher")
-        .arg("-Dminecraft.launcher.version=0.3")
+        .arg("-Dminecraft.launcher.version=0.5")
         .arg("-cp")
         .arg(classpath.join(separator))
         .arg(main_class)
@@ -2770,6 +3021,21 @@ async fn launch_instance(
     emit_progress(&app, operation, "Iniciando Minecraft", 96, false);
     let mut process = command.spawn().map_err(|error| error.to_string())?;
     let pid = process.id();
+    let metadata_path = profile_dir.join("instance.json");
+    if let Ok(raw) = fs::read_to_string(&metadata_path) {
+        if let Ok(mut metadata) = serde_json::from_str::<Value>(&raw) {
+            metadata["LastPlayedUnix"] = Value::from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or_default(),
+            );
+            let _ = fs::write(
+                &metadata_path,
+                serde_json::to_string_pretty(&metadata).unwrap_or(raw),
+            );
+        }
+    }
     if let Some(stdout) = process.stdout.take() {
         spawn_log_reader(stdout, log_path.clone());
     }
@@ -3077,7 +3343,7 @@ async fn start_server(app: tauri::AppHandle) -> Result<ServerStatus, String> {
         .map_err(|error| error.to_string())?;
 
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.4")
+        .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?;
     let game_dir = PathBuf::from(read_settings().game_directory);
@@ -3175,6 +3441,7 @@ pub fn run() {
             open_path,
             open_url,
             get_microsoft_account,
+            get_microsoft_skin_data_url,
             begin_microsoft_login,
             complete_microsoft_login,
             choose_offline_mode,
@@ -3188,6 +3455,9 @@ pub fn run() {
             read_image_data_url,
             list_installed_instances,
             create_instance,
+            clone_instance,
+            delete_instance,
+            set_instance_icon,
             list_instance_content,
             remove_instance_content,
             detect_java_runtimes,

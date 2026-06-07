@@ -48,9 +48,15 @@ jobs:
       - name: Build installer
         run: npm run tauri -- build
 
+      - name: Create portable executable
+        shell: powershell
+        run: Copy-Item src-tauri\target\release\vex-launcher.exe "src-tauri\target\release\VEX Launcher Portable.exe"
+
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: VEX-Launcher-Windows
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/VEX Launcher Portable.exe
           if-no-files-found: error
