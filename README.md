@@ -26,10 +26,16 @@ Modrinth content, and simple local servers.
   and Dark, AMOLED, Light, and High Contrast themes.
 - Current-user installer and a portable executable that does not require
   installation or administrator access.
+- Linux AppImage builds through GitHub Actions, with native Linux folders,
+  `xdg-open`, and an optional MangoHud launch switch.
 - Installer and launcher icon branded for VEX.
 
 Forge and NeoForge installers are still in development. VEX deliberately does
 not present a Vanilla profile as one of those loaders.
+
+The AppImage is prepared by CI because the release machine currently runs
+Windows. Microsoft login on Linux remains disabled until secure token storage
+and the native login window are implemented for that platform.
 
 ## Privacy and security
 

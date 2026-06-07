@@ -34,6 +34,17 @@ fn storage_root() -> PathBuf {
     if Path::new(r"D:\").is_dir() {
         return PathBuf::from(PREFERRED_STORAGE_ROOT);
     }
+    #[cfg(not(windows))]
+    {
+        return env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|_| {
+                env::var("HOME").map(|home| PathBuf::from(home).join(".local").join("share"))
+            })
+            .unwrap_or_else(|_| env::temp_dir())
+            .join("vex-launcher");
+    }
+    #[cfg(windows)]
     env::var("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| env::temp_dir())
@@ -43,6 +54,14 @@ fn default_game_directory() -> PathBuf {
     if Path::new(r"D:\").is_dir() {
         return PathBuf::from(r"D:\.minecraft");
     }
+    #[cfg(not(windows))]
+    {
+        return env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| storage_root())
+            .join(".minecraft");
+    }
+    #[cfg(windows)]
     env::var("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| storage_root())
@@ -97,6 +116,8 @@ struct LauncherSettings {
     offline_skin_path: Option<String>,
     use_offline_profile: bool,
     onboarding_completed: bool,
+    mangohud_enabled: bool,
+    minimize_on_launch: bool,
 }
 
 impl Default for LauncherSettings {
@@ -108,6 +129,8 @@ impl Default for LauncherSettings {
             offline_skin_path: None,
             use_offline_profile: true,
             onboarding_completed: false,
+            mangohud_enabled: false,
+            minimize_on_launch: true,
         }
     }
 }
@@ -515,17 +538,41 @@ fn set_game_directory(game_directory: String) -> Result<LauncherSettings, String
 }
 
 #[tauri::command]
+fn set_runtime_preferences(
+    mangohud_enabled: bool,
+    minimize_on_launch: bool,
+) -> Result<LauncherSettings, String> {
+    let mut settings = read_settings();
+    settings.mangohud_enabled = mangohud_enabled;
+    settings.minimize_on_launch = minimize_on_launch;
+    write_settings(&settings)?;
+    Ok(settings)
+}
+
+#[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
     let target = PathBuf::from(path.trim());
     if !target.exists() {
         return Err(String::from("O caminho não existe."));
     }
-    let mut command = hidden_command("explorer.exe");
-    if target.is_file() {
-        command.arg("/select,");
+    #[cfg(windows)]
+    {
+        let mut command = hidden_command("explorer.exe");
+        if target.is_file() {
+            command.arg("/select,");
+        }
+        command
+            .arg(target)
+            .spawn()
+            .map_err(|error| error.to_string())?;
     }
-    command
-        .arg(target)
+    #[cfg(not(windows))]
+    hidden_command("xdg-open")
+        .arg(if target.is_file() {
+            target.parent().unwrap_or(&target)
+        } else {
+            &target
+        })
         .spawn()
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -536,8 +583,14 @@ fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err(String::from("Somente links HTTPS são permitidos."));
     }
+    #[cfg(windows)]
     hidden_command("explorer.exe")
-        .arg(url)
+        .arg(&url)
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    hidden_command("xdg-open")
+        .arg(&url)
         .spawn()
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -2983,6 +3036,9 @@ async fn launch_instance(
         .unwrap_or("release");
     let separator = if cfg!(windows) { ";" } else { ":" };
     let mut command = hidden_command(&runtime.path);
+    if settings.mangohud_enabled {
+        command.env("MANGOHUD", "1");
+    }
     command
         .arg("-Xmx4G")
         .arg("-XX:+UseG1GC")
@@ -3438,6 +3494,7 @@ pub fn run() {
             storage_status,
             get_launcher_settings,
             set_game_directory,
+            set_runtime_preferences,
             open_path,
             open_url,
             get_microsoft_account,
