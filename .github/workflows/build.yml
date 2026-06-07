@@ -13,7 +13,7 @@ jobs:
     name: Windows installer
     runs-on: windows-latest
     env:
-      CARGO_TARGET_DIR: src-tauri/target
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -44,3 +44,4 @@ jobs:
         with:
           name: VEX-Launcher-Windows
           path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
