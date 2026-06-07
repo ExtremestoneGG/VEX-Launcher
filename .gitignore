@@ -1,0 +1,42 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.tauri/
+
+# Local launcher data must never be published.
+MineLauncher/
+.minecraft/
+instances/
+modpacks/
+profiles/
+runtimes/
+servers/
+worlds/
+logs/
+screenshots/
+crash-reports/
+settings.json
+instance.json
+server-profile.json
+*.log
+
+# Secrets and local credentials.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.token
+credentials*
+secrets*
+
+# Editor and operating-system files.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
