@@ -56,11 +56,16 @@ import vexLogo from "./assets/vex.svg";
 
 type Page = "home" | "library" | "discover" | "server" | "logs" | "settings";
 type DiscoverKind = "Tudo" | "Mods" | "Modpacks" | "Texturas" | "Shaders" | "Plugins";
+type DiscoverSource = "Todas" | "Modrinth" | "CurseForge";
 type BackendInstance = { id: string; name: string; loader: string; mc_version: string; version_id: string; profile_dir: string; icon_path?: string; kind: string; size_mb: number; modified_unix: number; last_played_unix: number };
 type LauncherSettingsResult = { storage_root: string; game_directory: string; offline_username: string; offline_skin_path?: string; use_offline_profile: boolean; onboarding_completed: boolean; mangohud_enabled: boolean; minimize_on_launch: boolean };
-type MicrosoftAccount = { logged_in: boolean; active: boolean; username: string; uuid: string; skin_url?: string };
+type MicrosoftAccount = { logged_in: boolean; active: boolean; username: string; uuid: string; skin_url?: string; skin_data_url?: string };
 type JavaRuntime = { path: string; major: number };
 type ModrinthInstallTarget = { instance_name: string; game_version: string; loader: string; destination_dir: string; download_url: string; filename: string; sha512?: string };
+type CurseForgeInstallTarget = { instance_name: string; game_version: string; loader: string; destination_dir: string; download_url: string; filename: string; md5?: string };
+type ContentInstallTarget = ModrinthInstallTarget | CurseForgeInstallTarget;
+type CurseForgeStatus = { configured: boolean; source: string };
+type CurseForgeSearchResult = { projects: Array<{ id: string; name: string; author: string; kind: string; description: string; versions: string[]; downloads: number; icon_url?: string; page_url?: string }>; total: number };
 type InstanceContent = { name: string; path: string; kind: string; size_mb: number; modified_unix: number };
 type Theme = "dark" | "amoled" | "light" | "contrast";
 type ServerProfile = { name: string; version: string; software: string; memory_gb: number; port: number; max_players: number; motd: string; online_mode: boolean; gamemode: string; difficulty: string; directory: string };
@@ -160,7 +165,7 @@ function Sidebar({ page, setPage, compact, setCompact, username, skinDataUrl, ac
       <div className="sidebar-main">
         <div className="sidebar-section-label">Navegação</div>
         {items.map((item) => (
-          <button key={item.id} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => setPage(item.id)}>
+          <button key={item.id} data-tutorial-page={item.id} className={`nav-item ${page === item.id ? "active" : ""}`} onClick={() => setPage(item.id)}>
             {item.icon}<span>{item.label}</span>
           </button>
         ))}
@@ -175,7 +180,7 @@ function Sidebar({ page, setPage, compact, setCompact, username, skinDataUrl, ac
         <button className="nav-item secondary" onClick={() => setPage("library")}><Plus size={19} /><span>Nova instância</span></button>
       </div>
       <div className="sidebar-bottom">
-        <button className={`nav-item settings-nav-trigger ${page === "settings" ? "active" : ""}`} onClick={() => setPage("settings")}><Settings size={19} /><span>Configurações</span></button>
+        <button data-tutorial-page="settings" className={`nav-item settings-nav-trigger ${page === "settings" ? "active" : ""}`} onClick={() => setPage("settings")}><Settings size={19} /><span>Configurações</span></button>
         <button className="profile-row" onClick={() => setPage("settings")}>
           <SkinFace skinDataUrl={skinDataUrl} label={username} />
           <span className="profile-copy"><b>{username}</b><small>{accountLabel}</small></span>
@@ -309,7 +314,7 @@ function NewInstanceModal({ close, created, notify }: { close: () => void; creat
         {["vanilla", "fabric", "quilt", "forge", "neoforge"].map((item) => <button key={item} className={loader === item ? "active" : ""} onClick={() => setLoader(item)}>{item === "neoforge" ? "NeoForge" : item.charAt(0).toUpperCase() + item.slice(1)}</button>)}
       </div></div>
       <label className="form-label">Versão do Minecraft<select value={version} onChange={(event) => setVersion(event.target.value)}>{versions.map((item) => <option key={item}>{item}</option>)}</select></label>
-      {(loader === "forge" || loader === "neoforge") && <div className="inline-warning">O instalador real de {loader === "forge" ? "Forge" : "NeoForge"} está em preparação. O VEX não criará uma instância Vanilla disfarçada.</div>}
+      {(loader === "forge" || loader === "neoforge") && <div className="inline-warning">O VEX usará o instalador oficial do {loader === "forge" ? "Forge" : "NeoForge"}. A primeira criação pode levar alguns minutos.</div>}
       <button className="advanced-toggle" onClick={() => setAdvanced(!advanced)}><ChevronRight size={17} />Mais opções</button>
       {advanced && <div className="advanced-instance-options">
         <label className="form-label">Memória máxima (RAM)<input value={memory} onChange={(event) => setMemory(event.target.value)} /></label>
@@ -317,7 +322,7 @@ function NewInstanceModal({ close, created, notify }: { close: () => void; creat
         <label className="check-row"><input type="checkbox" defaultChecked /> Ocultar o launcher enquanto o jogo estiver aberto</label>
         <p>Estas preferências ficarão ligadas à instância e poderão ser alteradas depois.</p>
       </div>}
-      <div className="modal-actions"><button className="secondary-button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy || loader === "forge" || loader === "neoforge"} onClick={() => void submit()}><Plus size={17} />{busy ? "Criando..." : "Criar instância"}</button></div>
+      <div className="modal-actions"><button className="secondary-button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy} onClick={() => void submit()}><Plus size={17} />{busy ? "Criando..." : "Criar instância"}</button></div>
     </section>
   </div>;
 }
@@ -351,7 +356,7 @@ function HomePage({ play, username, skinDataUrl, accountLabel, appInstances, nav
     }
   };
   if (!active) {
-    return <div className="page-grid home-grid empty-home"><section className="hero-panel"><div className="hero-copy"><span className="overline">Primeiro passo</span><h1>Boa tarde, {username}.</h1><p>Crie uma instância Vanilla, Fabric ou Quilt para começar a jogar e instalar conteúdo.</p><div className="hero-actions"><button className="primary-button" onClick={() => navigate("library")}><Plus size={18} />Criar instância</button><button className="secondary-button" onClick={() => navigate("discover")}><Compass size={18} />Descobrir conteúdo</button></div></div></section></div>;
+    return <div className="page-grid home-grid empty-home"><section className="hero-panel"><div className="hero-copy"><span className="overline">Primeiro passo</span><h1>Boa tarde, {username}.</h1><p>Crie uma instância Vanilla, Fabric, Quilt, Forge ou NeoForge para começar.</p><div className="hero-actions"><button className="primary-button" onClick={() => navigate("library")}><Plus size={18} />Criar instância</button><button className="secondary-button" onClick={() => navigate("discover")}><Compass size={18} />Descobrir conteúdo</button></div></div></section></div>;
   }
   return (
     <div className="page-grid home-grid">
@@ -535,12 +540,16 @@ function LibraryPage({ play, appInstances, refreshInstances, notify }: { play: (
 
 function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
   const [kind, setKind] = useState<DiscoverKind>("Modpacks");
+  const [source, setSource] = useState<DiscoverSource>("Todas");
   const [selected, setSelected] = useState<Project | null>(null);
   const [query, setQuery] = useState("");
   const [remoteProjects, setRemoteProjects] = useState<Project[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [gameVersion, setGameVersion] = useState("");
+  const [loaderFilter, setLoaderFilter] = useState("");
+  const [versionOptions, setVersionOptions] = useState<string[]>(["1.21.5", "1.21.4", "1.21.1", "1.20.1"]);
   const [sortIndex, setSortIndex] = useState<"relevance" | "downloads" | "updated">("downloads");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
@@ -552,29 +561,49 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
     return Array.from({ length: Math.min(5, totalPages) }, (_, index) => start + index);
   }, [page, totalPages]);
   const kindMap: Record<DiscoverKind, string | null> = { Tudo: null, Mods: "mod", Modpacks: "modpack", Texturas: "resourcepack", Shaders: "shader", Plugins: "plugin" };
-  const searchProjects = async (selectedKind = kind, selectedSort = sortIndex, selectedPage = page, selectedPageSize = pageSize) => {
+  const searchProjects = async (selectedKind = kind, selectedSort = sortIndex, selectedPage = page, selectedPageSize = pageSize, selectedSource = source, selectedVersion = gameVersion, selectedLoader = loaderFilter) => {
     setLoading(true);
     setSearchError("");
     setPage(selectedPage);
     try {
-      const facets = kindMap[selectedKind] ? `&facets=${encodeURIComponent(JSON.stringify([[`project_type:${kindMap[selectedKind]}`]]))}` : "";
       const offset = (selectedPage - 1) * selectedPageSize;
-      const response = await fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(query.trim())}&limit=${selectedPageSize}&offset=${offset}&index=${selectedSort}${facets}`);
-      if (!response.ok) throw new Error(`Modrinth respondeu ${response.status}`);
-      const data = await response.json() as { hits: Array<Record<string, unknown>>; total_hits?: number };
-      setTotalHits(Number(data.total_hits ?? data.hits.length));
-      setRemoteProjects(data.hits.map((hit, index) => ({
-        id: String(hit.project_id),
-        name: String(hit.title),
-        author: String(hit.author),
-        kind: String(hit.project_type) === "resourcepack" ? "Textura" : String(hit.project_type) === "modpack" ? "Modpack" : String(hit.project_type) === "shader" ? "Shader" : String(hit.project_type) === "plugin" ? "Plugin" : "Mod",
-        description: String(hit.description ?? ""),
-        versions: Array.isArray(hit.versions) ? hit.versions.map(String).slice(-8).reverse() : [],
-        downloads: new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(Number(hit.downloads ?? 0)),
-        color: ["#607f91", "#6f9295", "#8a929c", "#647d9a", "#68a37a"][index % 5],
-        icon: String(hit.title).slice(0, 2),
-        iconUrl: typeof hit.icon_url === "string" ? hit.icon_url : undefined
-      })));
+      const tasks: Array<Promise<{ projects: Project[]; total: number; error?: string }>> = [];
+      if (selectedSource !== "CurseForge") {
+        const facetGroups: string[][] = [];
+        if (kindMap[selectedKind]) facetGroups.push([`project_type:${kindMap[selectedKind]}`]);
+        if (selectedVersion) facetGroups.push([`versions:${selectedVersion}`]);
+        if (selectedLoader) facetGroups.push([`categories:${selectedLoader}`]);
+        const facets = facetGroups.length ? `&facets=${encodeURIComponent(JSON.stringify(facetGroups))}` : "";
+        tasks.push(fetch(`https://api.modrinth.com/v2/search?query=${encodeURIComponent(query.trim())}&limit=${Math.min(selectedPageSize, 100)}&offset=${offset}&index=${selectedSort}${facets}`)
+          .then(async (response) => {
+            if (!response.ok) throw new Error(`Modrinth respondeu ${response.status}`);
+            const data = await response.json() as { hits: Array<Record<string, unknown>>; total_hits?: number };
+            return { total: Number(data.total_hits ?? data.hits.length), projects: data.hits.map((hit, index) => ({
+              id: String(hit.project_id), name: String(hit.title), author: String(hit.author),
+              kind: String(hit.project_type) === "resourcepack" ? "Textura" : String(hit.project_type) === "modpack" ? "Modpack" : String(hit.project_type) === "shader" ? "Shader" : String(hit.project_type) === "plugin" ? "Plugin" : "Mod",
+              description: String(hit.description ?? ""), versions: Array.isArray(hit.versions) ? hit.versions.map(String).slice(-12).reverse() : [],
+              downloads: new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(Number(hit.downloads ?? 0)),
+              color: ["#607f91", "#6f9295", "#8a929c", "#647d9a", "#68a37a"][index % 5], icon: String(hit.title).slice(0, 2),
+              iconUrl: typeof hit.icon_url === "string" ? hit.icon_url : undefined, source: "Modrinth" as const
+            })) };
+          })
+          .catch((error) => ({ projects: [], total: 0, error: String(error) })));
+      }
+      if (selectedSource !== "Modrinth") {
+        tasks.push(invoke<CurseForgeSearchResult>("search_curseforge", {
+          query, projectType: kindMap[selectedKind] ?? "", gameVersion: selectedVersion, loader: selectedLoader,
+          index: offset, pageSize: Math.min(selectedPageSize, 50)
+        }).then((data) => ({ total: data.total, projects: data.projects.map((project, index) => ({
+          id: project.id, name: project.name, author: project.author, kind: project.kind, description: project.description, versions: project.versions,
+          downloads: new Intl.NumberFormat("pt-BR", { notation: "compact", maximumFractionDigits: 1 }).format(project.downloads),
+          color: ["#7b6677", "#756d83", "#607b88", "#6d7d72"][index % 4], icon: project.name.slice(0, 2), iconUrl: project.icon_url,
+          source: "CurseForge" as const, pageUrl: project.page_url
+        })) })).catch((error) => ({ projects: [], total: 0, error: String(error) })));
+      }
+      const results = await Promise.all(tasks);
+      setRemoteProjects(results.flatMap((result) => result.projects));
+      setTotalHits(results.reduce((total, result) => total + result.total, 0));
+      setSearchError(results.map((result) => result.error).filter(Boolean).join(" · "));
     } catch (error) {
       setSearchError(error instanceof Error ? error.message : "Não foi possível pesquisar agora.");
       setRemoteProjects(null);
@@ -584,15 +613,19 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
     }
   };
   useEffect(() => {
-    void searchProjects("Modpacks", "downloads", 1, 20);
+    fetch("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json").then((response) => response.json()).then((data: { versions?: Array<{ id: string; type: string }> }) => setVersionOptions((data.versions ?? []).filter((item) => item.type === "release").map((item) => item.id))).catch(() => undefined);
+    void searchProjects("Modpacks", "downloads", 1, 20, "Todas", "", "");
   }, []);
   const openProject = async (project: Project) => {
     setSelected(project);
     try {
-      const response = await fetch(`https://api.modrinth.com/v2/project/${project.id}/version`);
-      if (!response.ok) return;
-      const versions = await response.json() as Array<{ game_versions?: string[] }>;
-      const available = [...new Set(versions.flatMap((version) => version.game_versions ?? []))].slice(0, 12);
+      const available = project.source === "CurseForge"
+        ? await invoke<string[]>("get_curseforge_project_versions", { projectId: project.id })
+        : await fetch(`https://api.modrinth.com/v2/project/${project.id}/version`).then(async (response) => {
+          if (!response.ok) return [];
+          const versions = await response.json() as Array<{ game_versions?: string[] }>;
+          return [...new Set(versions.flatMap((version) => version.game_versions ?? []))];
+        });
       setSelected({ ...project, versions: available.length ? available : project.versions });
     } catch {
       // The project page still works with versions returned by search.
@@ -601,18 +634,18 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
   if (selected) return <ProjectDetail project={selected} close={() => setSelected(null)} appInstances={appInstances} />;
   return (
     <div className="discover-page">
-      <div className="page-intro discover-intro"><div><span className="overline">Modrinth e fontes compatíveis</span><h1>Descubra seu próximo mundo</h1><p>Conteúdo organizado por compatibilidade, versão e tipo.</p></div></div>
+      <div className="page-intro discover-intro"><div><span className="overline">Modrinth + CurseForge</span><h1>Descubra seu próximo mundo</h1><p>Conteúdo organizado por compatibilidade, versão e fonte.</p></div></div>
       <div className="discover-toolbar">
         <div className="search-field large grow"><Search size={19} /><input aria-label="Buscar projetos" placeholder="Buscar mods, modpacks, texturas e shaders..." value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchProjects(kind, sortIndex, 1); }} /><kbd>Enter</kbd></div>
         <button className="primary-button search-button" onClick={() => void searchProjects(kind, sortIndex, 1)}><Search size={17} />Buscar</button>
         <button className={`secondary-button ${filtersOpen ? "following" : ""}`} onClick={() => setFiltersOpen(!filtersOpen)}><SlidersHorizontal size={17} />Filtros</button>
       </div>
-      {filtersOpen && <div className="filter-panel"><span>Tipo de conteúdo</span><b>{kind}</b><span>Compatibilidade</span><b>{appInstances.length} instância(s) instalada(s)</b><button className="text-button" onClick={() => { setKind("Modpacks"); setQuery(""); setSortIndex("downloads"); setFiltersOpen(false); void searchProjects("Modpacks", "downloads", 1); }}>Limpar filtros</button></div>}
+      {filtersOpen && <div className="filter-panel"><label>Fonte<select value={source} onChange={(event) => { const next = event.target.value as DiscoverSource; setSource(next); void searchProjects(kind, sortIndex, 1, pageSize, next); }}><option>Todas</option><option>Modrinth</option><option>CurseForge</option></select></label><label>Versão<select value={gameVersion} onChange={(event) => { setGameVersion(event.target.value); void searchProjects(kind, sortIndex, 1, pageSize, source, event.target.value, loaderFilter); }}><option value="">Todas</option>{versionOptions.map((version) => <option key={version}>{version}</option>)}</select></label><label>Loader<select value={loaderFilter} onChange={(event) => { setLoaderFilter(event.target.value); void searchProjects(kind, sortIndex, 1, pageSize, source, gameVersion, event.target.value); }}><option value="">Todos</option><option value="forge">Forge</option><option value="fabric">Fabric</option><option value="quilt">Quilt</option><option value="neoforge">NeoForge</option></select></label><span>Compatibilidade</span><b>{appInstances.length} instância(s) instalada(s)</b><button className="text-button" onClick={() => { setKind("Modpacks"); setQuery(""); setSortIndex("downloads"); setSource("Todas"); setGameVersion(""); setLoaderFilter(""); setFiltersOpen(false); void searchProjects("Modpacks", "downloads", 1, pageSize, "Todas", "", ""); }}>Limpar filtros</button></div>}
       <div className="category-strip">
         {kinds.map((item) => <button key={item} className={kind === item ? "active" : ""} onClick={() => { setKind(item); void searchProjects(item, sortIndex, 1); }}>{item}</button>)}
       </div>
       <div className="results-heading">
-        <div><b>{loading ? "Buscando no Modrinth..." : query.trim() ? `Resultados para “${query}”` : kind === "Modpacks" && sortIndex === "downloads" ? "Modpacks populares do momento" : `${kind} em destaque`}</b><span>{searchError || `${totalHits.toLocaleString("pt-BR")} projetos encontrados`}</span></div>
+        <div><b>{loading ? "Buscando nas fontes..." : query.trim() ? `Resultados para “${query}”` : kind === "Modpacks" && sortIndex === "downloads" ? "Modpacks populares do momento" : `${kind} em destaque`}</b><span>{searchError || `${totalHits.toLocaleString("pt-BR")} projetos encontrados`}</span></div>
         <div className="results-controls">
           <label className="page-size-control">Por página<select aria-label="Itens por página" value={pageSize} onChange={(event) => { const nextSize = Number(event.target.value); setPageSize(nextSize); void searchProjects(kind, sortIndex, 1, nextSize); }}><option value={20}>20</option><option value={40}>40</option><option value={60}>60</option><option value={100}>100</option></select></label>
           <button className="sort-button" onClick={() => { const next = sortIndex === "relevance" ? "downloads" : sortIndex === "downloads" ? "updated" : "relevance"; setSortIndex(next); void searchProjects(kind, next, 1); }}>{sortIndex === "relevance" ? "Mais relevantes" : sortIndex === "downloads" ? "Mais baixados" : "Atualizados"} <ChevronDown size={16} /></button>
@@ -620,9 +653,9 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
       </div>
       <div className="project-grid">
         {shown.map((project) => (
-          <button className="project-card" key={project.id} onClick={() => void openProject(project)}>
+          <button className="project-card" key={`${project.source}-${project.id}`} onClick={() => void openProject(project)}>
             <ProjectArt project={project} size="large" />
-            <span className="project-copy"><span className="project-kind">{project.kind}</span><b>{project.name}</b><small>por {project.author}</small><p>{project.description}</p></span>
+            <span className="project-copy"><span className="project-kind">{project.kind} · {project.source ?? "Modrinth"}</span><b>{project.name}</b><small>por {project.author}</small><p>{project.description}</p></span>
             <span className="project-footer"><span><Download size={14} />{project.downloads}</span><span>{project.versions[0]}</span></span>
           </button>
         ))}
@@ -638,7 +671,7 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
 }
 
 function ProjectDetail({ project, close, appInstances }: { project: Project; close: () => void; appInstances: Instance[] }) {
-  const [targets, setTargets] = useState<ModrinthInstallTarget[]>([]);
+  const [targets, setTargets] = useState<ContentInstallTarget[]>([]);
   const [selectedVersion, setSelectedVersion] = useState("");
   const [installMessage, setInstallMessage] = useState("");
   const [loadingTargets, setLoadingTargets] = useState(false);
@@ -650,7 +683,7 @@ function ProjectDetail({ project, close, appInstances }: { project: Project; clo
     if (projectType === "modpack") {
       try {
         setInstallMessage(`Instalando ${project.name}. Isso pode levar alguns minutos...`);
-        await invoke("install_modrinth_modpack", { projectId: project.id, projectName: project.name, author: project.author, gameVersion: version });
+        await invoke(project.source === "CurseForge" ? "install_curseforge_modpack" : "install_modrinth_modpack", { projectId: project.id, projectName: project.name, author: project.author, gameVersion: version });
         setInstallMessage(`${project.name} instalado. Atualizando a Biblioteca...`);
         window.setTimeout(() => window.location.reload(), 1800);
       } catch (error) {
@@ -661,7 +694,7 @@ function ProjectDetail({ project, close, appInstances }: { project: Project; clo
       return;
     }
     try {
-      const compatible = await invoke<ModrinthInstallTarget[]>("get_modrinth_install_targets", { projectId: project.id, projectType, gameVersion: version });
+      const compatible = await invoke<ContentInstallTarget[]>(project.source === "CurseForge" ? "get_curseforge_install_targets" : "get_modrinth_install_targets", { projectId: project.id, projectType, gameVersion: version });
       setTargets(compatible);
       if (!compatible.length) setInstallMessage(`Nenhuma instância instalada aceita Minecraft ${version}.`);
     } catch (error) {
@@ -671,10 +704,10 @@ function ProjectDetail({ project, close, appInstances }: { project: Project; clo
       setLoadingTargets(false);
     }
   };
-  const installTarget = async (target: ModrinthInstallTarget) => {
+  const installTarget = async (target: ContentInstallTarget) => {
     setInstallMessage(`Instalando ${project.name} em ${target.instance_name}...`);
     try {
-      const destination = await invoke<string>("install_modrinth_target", { target });
+      const destination = await invoke<string>(project.source === "CurseForge" ? "install_curseforge_target" : "install_modrinth_target", { target });
       setInstallMessage(`Instalado com segurança em ${destination}`);
     } catch (error) {
       setInstallMessage(`Falha na instalação: ${String(error)}`);
@@ -685,8 +718,8 @@ function ProjectDetail({ project, close, appInstances }: { project: Project; clo
       <button className="back-button" onClick={close}><ChevronLeft size={17} />Voltar para resultados</button>
       <section className="project-detail-hero">
         <ProjectArt project={project} size="hero" />
-        <div className="grow"><span className="overline">{project.kind} · por {project.author}</span><h1>{project.name}</h1><p>{project.description}</p><div className="project-stats"><span><Download size={15} />{project.downloads} downloads</span><span><ShieldCheck size={15} />Projeto verificado</span></div></div>
-        <button className="primary-button" onClick={() => void findTargets(project.versions[0])}><Download size={18} />Instalar</button>
+        <div className="grow"><span className="overline">{project.kind} · {project.source ?? "Modrinth"} · por {project.author}</span><h1>{project.name}</h1><p>{project.description}</p><div className="project-stats"><span><Download size={15} />{project.downloads} downloads</span><span><ShieldCheck size={15} />Fonte identificada</span></div></div>
+        <div className="button-row"><button className="primary-button" onClick={() => void findTargets(project.versions[0])}><Download size={18} />Instalar</button>{project.pageUrl && <button className="secondary-button" onClick={() => void invoke("open_url", { url: project.pageUrl })}><Globe2 size={17} />Página original</button>}</div>
       </section>
       <div className="detail-columns">
         <section className="section-block versions-block">
@@ -696,7 +729,7 @@ function ProjectDetail({ project, close, appInstances }: { project: Project; clo
           ))}
         </section>
         <aside className="section-block install-aside"><span className="overline">Instalação inteligente</span><h2>{selectedVersion ? `Minecraft ${selectedVersion}` : "Escolha uma versão"}</h2><p>{selectedVersion ? "Somente destinos realmente compatíveis aparecem abaixo." : "Selecione uma versão para encontrar instâncias compatíveis."}</p>
-          {loadingTargets && <div className="empty-state"><span className="toast-spinner" /><span>Consultando arquivos do Modrinth...</span></div>}
+          {loadingTargets && <div className="empty-state"><span className="toast-spinner" /><span>Consultando arquivos do {project.source ?? "Modrinth"}...</span></div>}
           {!loadingTargets && targets.map((target) => <div className="compatible-target" key={target.destination_dir}><span className="mini-instance-icon" style={{ background: "#587180" }}>{initials(target.instance_name)}</span><span className="grow"><b>{target.instance_name}</b><small>{target.loader} · {target.game_version}</small></span><button className="secondary-button compact" onClick={() => void installTarget(target)}>Instalar</button></div>)}
           {!loadingTargets && !targets.length && !installMessage && <div className="empty-state"><Box size={20} /><span>Escolha uma versão para começar.</span></div>}
           {installMessage && <div className={`install-message ${installMessage.startsWith("Instalado") ? "success" : ""}`}>{installMessage}</div>}
@@ -835,14 +868,17 @@ function LogsPage({ storageRoot }: { storageRoot: string }) {
   );
 }
 
-function SettingsPage({ username, skinDataUrl, onSkinChanged, onSaveProfile, microsoftAccount, useOfflineProfile, onMicrosoftLogin, onUseMicrosoft, onUseOffline, onMicrosoftLogout, storageRoot, gameDirectory, javaRuntimes, onGameDirectoryChanged, notify, theme, onThemeChanged, onOpenTutorial, mangohudEnabled, minimizeOnLaunch, onRuntimePreferencesChanged }: { username: string; skinDataUrl?: string; onSkinChanged: (dataUrl?: string) => void; onSaveProfile: (username: string) => Promise<void>; microsoftAccount: MicrosoftAccount; useOfflineProfile: boolean; onMicrosoftLogin: () => void; onUseMicrosoft: () => void; onUseOffline: () => void; onMicrosoftLogout: () => void; storageRoot: string; gameDirectory: string; javaRuntimes: JavaRuntime[]; onGameDirectoryChanged: (path: string) => void; notify: (message: string) => void; theme: Theme; onThemeChanged: (theme: Theme) => void; onOpenTutorial: () => void; mangohudEnabled: boolean; minimizeOnLaunch: boolean; onRuntimePreferencesChanged: (mangohud: boolean, minimize: boolean) => void }) {
+function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChanged, onSaveProfile, microsoftAccount, useOfflineProfile, onMicrosoftLogin, onUseMicrosoft, onUseOffline, onMicrosoftLogout, storageRoot, gameDirectory, javaRuntimes, onGameDirectoryChanged, notify, theme, onThemeChanged, onOpenTutorial, mangohudEnabled, minimizeOnLaunch, onRuntimePreferencesChanged }: { username: string; skinDataUrl?: string; microsoftSkinDataUrl?: string; onSkinChanged: (dataUrl?: string) => void; onSaveProfile: (username: string) => Promise<void>; microsoftAccount: MicrosoftAccount; useOfflineProfile: boolean; onMicrosoftLogin: () => void; onUseMicrosoft: () => void; onUseOffline: () => void; onMicrosoftLogout: () => void; storageRoot: string; gameDirectory: string; javaRuntimes: JavaRuntime[]; onGameDirectoryChanged: (path: string) => void; notify: (message: string) => void; theme: Theme; onThemeChanged: (theme: Theme) => void; onOpenTutorial: () => void; mangohudEnabled: boolean; minimizeOnLaunch: boolean; onRuntimePreferencesChanged: (mangohud: boolean, minimize: boolean) => void }) {
   const [draftName, setDraftName] = useState(username);
   const [saved, setSaved] = useState(true);
   const [skinStatus, setSkinStatus] = useState("Nenhuma skin personalizada");
   const [section, setSection] = useState<"profile" | "minecraft" | "network" | "appearance" | "advanced" | "help">("profile");
   const [dense, setDense] = useState(false);
+  const [curseForgeStatus, setCurseForgeStatus] = useState<CurseForgeStatus>({ configured: false, source: "Não configurada" });
+  const [curseForgeKey, setCurseForgeKey] = useState("");
   const skinInput = useRef<HTMLInputElement>(null);
   useEffect(() => setDraftName(username), [username]);
+  useEffect(() => { invoke<CurseForgeStatus>("get_curseforge_status").then(setCurseForgeStatus).catch(() => undefined); }, []);
   const saveProfile = async () => {
     const cleanName = draftName.trim();
     if (!/^[A-Za-z0-9_]{3,16}$/.test(cleanName)) return;
@@ -886,6 +922,25 @@ function SettingsPage({ username, skinDataUrl, onSkinChanged, onSaveProfile, mic
       notify(String(error));
     }
   };
+  const saveCurseForgeKey = async () => {
+    try {
+      const status = await invoke<CurseForgeStatus>("save_curseforge_api_key", { key: curseForgeKey });
+      setCurseForgeStatus(status);
+      setCurseForgeKey("");
+      notify("CurseForge conectado com segurança");
+    } catch (error) {
+      notify(String(error));
+    }
+  };
+  const removeCurseForgeKey = async () => {
+    try {
+      setCurseForgeStatus(await invoke<CurseForgeStatus>("remove_curseforge_api_key"));
+      setCurseForgeKey("");
+      notify("Chave local do CurseForge removida");
+    } catch (error) {
+      notify(String(error));
+    }
+  };
   const logout = async () => {
     if (!window.confirm("Voltar para o perfil offline Player?")) return;
     await removeSkin();
@@ -903,12 +958,12 @@ function SettingsPage({ username, skinDataUrl, onSkinChanged, onSaveProfile, mic
             <div className="profile-editor"><div className="skin-preview large"><SkinFace skinDataUrl={skinDataUrl} label={draftName} large /></div><div className="grow"><label>Nome offline</label><div className="input-action"><input value={draftName} onChange={(event) => { setDraftName(event.target.value); setSaved(false); }} maxLength={16} /><button onClick={saveProfile}>Salvar</button></div><span className="field-hint">Entre 3 e 16 caracteres, usando letras, números ou _.</span><input ref={skinInput} className="visually-hidden" type="file" accept="image/png" onChange={(event) => void saveSkin(event.target.files?.[0])} /><div className="button-row"><button className="secondary-button" onClick={() => skinInput.current?.click()}><Image size={16} />Escolher skin</button><button className="text-button danger-text" onClick={() => void removeSkin()}><X size={16} />Remover skin</button></div><span className="skin-status">{skinStatus}</span></div></div>
           </section>
           <section className="settings-group"><div className="settings-heading"><div><h2>Conta Microsoft</h2><p>Login oficial com Xbox Live e Minecraft. Sua senha nunca passa pelo VEX.</p></div><span className={`saved-state ${microsoftAccount.logged_in ? "" : "pending"}`}>{microsoftAccount.logged_in ? <Check size={15} /> : <MessageSquareText size={15} />}{microsoftAccount.logged_in ? "Conectada" : "Não conectada"}</span></div>
-            <div className="account-row"><span className="account-icon">{microsoftAccount.logged_in ? <ShieldCheck size={19} /> : <Box size={19} />}</span><span className="grow"><b>{microsoftAccount.logged_in ? microsoftAccount.username : "Nenhuma conta Microsoft"}</b><small>{microsoftAccount.logged_in ? (useOfflineProfile ? "Conta salva, perfil offline ativo" : "Conta Microsoft ativa em todas as instâncias") : "Entre para usar seu nome, licença e skin oficiais."}</small></span>{microsoftAccount.logged_in ? <><button className="secondary-button" disabled={!useOfflineProfile} onClick={onUseMicrosoft}>{useOfflineProfile ? "Usar conta" : "Em uso"}</button><button className="text-button danger-text" onClick={onMicrosoftLogout}>Sair</button></> : <button className="primary-button small" onClick={onMicrosoftLogin}><ShieldCheck size={15} />Entrar com Microsoft</button>}</div>
+            <div className="account-row">{microsoftAccount.logged_in ? <SkinFace skinDataUrl={microsoftAccount.skin_data_url ?? microsoftSkinDataUrl ?? microsoftAccount.skin_url} label={microsoftAccount.username} /> : <span className="account-icon"><Box size={19} /></span>}<span className="grow"><b>{microsoftAccount.logged_in ? microsoftAccount.username : "Nenhuma conta Microsoft"}</b><small>{microsoftAccount.logged_in ? (useOfflineProfile ? "Conta salva, perfil offline ativo" : "Conta Microsoft ativa em todas as instâncias") : "Entre para usar seu nome, licença e skin oficiais."}</small></span>{microsoftAccount.logged_in ? <><button className="secondary-button" disabled={!useOfflineProfile} onClick={onUseMicrosoft}>{useOfflineProfile ? "Usar conta" : "Em uso"}</button><button className="text-button danger-text" onClick={onMicrosoftLogout}>Sair</button></> : <button className="primary-button small" onClick={onMicrosoftLogin}><ShieldCheck size={15} />Entrar com Microsoft</button>}</div>
           </section>
           <section className="settings-group"><div className="settings-heading"><div><h2>Perfil offline</h2><p>Use o nome e a skin locais quando não quiser entrar com a Microsoft.</p></div><span className={`saved-state ${useOfflineProfile ? "" : "pending"}`}>{useOfflineProfile ? <Check size={15} /> : <UserRound size={15} />}{useOfflineProfile ? "Em uso" : "Disponível"}</span></div><div className="account-row"><span className="account-icon"><UserRound size={19} /></span><span className="grow"><b>{username}</b><small>{skinDataUrl ? "Skin offline personalizada salva" : "Skin clássica salva"}</small></span><button className="secondary-button" disabled={useOfflineProfile} onClick={onUseOffline}>{useOfflineProfile ? "Em uso" : "Usar offline"}</button></div></section>
           <button className="logout-button" onClick={() => void logout()}><LogOut size={17} />Redefinir perfil offline</button></>}
           {section === "minecraft" && <section className="settings-group"><div className="settings-heading"><div><h2>Pastas e armazenamento</h2><p>Downloads e instâncias permanecem no disco escolhido.</p></div></div><div className="setting-row"><span><b>Pasta do Minecraft</b><small>{gameDirectory}</small></span><div className="button-row inline"><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: gameDirectory }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button><button className="secondary-button compact" onClick={() => void changeDirectory()}>Alterar</button></div></div><div className="setting-row"><span><b>Cache do launcher</b><small>{storageRoot} · downloads temporários</small></span><button className="secondary-button compact" onClick={() => void clearCache()}>Limpar</button></div><div className="setting-row"><span><b>Java detectado</b><small>{javaRuntimes[0] ? `Java ${javaRuntimes[0].major} · ${javaRuntimes[0].path}` : "Nenhum Java encontrado"}</small></span><button className="secondary-button compact" onClick={() => setSection("advanced")}>Gerenciar</button></div></section>}
-          {section === "network" && <section className="settings-group"><div className="settings-heading"><div><h2>Rede e fontes</h2><p>Conteúdo é pesquisado e baixado diretamente de fontes conhecidas.</p></div></div><div className="setting-row"><span><b>Modrinth</b><small>Mods, modpacks, shaders e texturas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://modrinth.com")}>Abrir</button></div><div className="setting-row"><span><b>playit.gg</b><small>Túnel opcional para compartilhar servidores locais</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://playit.gg")}>Abrir</button></div></section>}
+          {section === "network" && <section className="settings-group"><div className="settings-heading"><div><h2>Rede e fontes</h2><p>Conteúdo é pesquisado e baixado diretamente de fontes conhecidas.</p></div></div><div className="setting-row"><span><b>Modrinth</b><small>Pronto para mods, modpacks, shaders e texturas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://modrinth.com")}>Abrir</button></div><div className="setting-row source-credential-row"><span><b>CurseForge</b><small>{curseForgeStatus.configured ? `Conectado · ${curseForgeStatus.source}` : "Exige uma chave gratuita de desenvolvedor. Ela fica protegida neste dispositivo."}</small></span><div className="source-credential-actions">{!curseForgeStatus.configured && <input type="password" value={curseForgeKey} onChange={(event) => setCurseForgeKey(event.target.value)} placeholder="Chave da API CurseForge" autoComplete="off" />} {!curseForgeStatus.configured && <button className="primary-button compact" disabled={!curseForgeKey.trim()} onClick={() => void saveCurseForgeKey()}>Conectar</button>}{curseForgeStatus.configured && <button className="secondary-button compact" onClick={() => void removeCurseForgeKey()}>Desconectar</button>}<button className="secondary-button compact" onClick={() => void openUrl("https://console.curseforge.com/")}>Obter chave</button></div></div><div className="setting-row"><span><b>playit.gg</b><small>Túnel opcional para compartilhar servidores locais</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://playit.gg")}>Abrir</button></div></section>}
           {section === "appearance" && <section className="settings-group"><div className="settings-heading"><div><h2>Aparência e acessibilidade</h2><p>Escolha um tema confortável para sua tela e ajuste a densidade.</p></div></div><div className="theme-picker">{([{ id: "dark", label: "Escuro", note: "Padrão equilibrado" }, { id: "amoled", label: "AMOLED", note: "Pretos absolutos" }, { id: "light", label: "Claro", note: "Ambientes iluminados" }, { id: "contrast", label: "Alto contraste", note: "Acessibilidade" }] as Array<{ id: Theme; label: string; note: string }>).map((item) => <button key={item.id} className={theme === item.id ? "active" : ""} onClick={() => onThemeChanged(item.id)}><span className={`theme-swatch ${item.id}`}><Sun size={16} /></span><b>{item.label}</b><small>{item.note}</small></button>)}</div><div className="setting-row"><span><b>Modo compacto</b><small>Reduz espaços em listas longas.</small></span><button className="secondary-button compact" onClick={() => { setDense(!dense); document.body.classList.toggle("dense-ui", !dense); }}>{dense ? "Desativar" : "Ativar"}</button></div></section>}
           {section === "advanced" && <><section className="settings-group"><div className="settings-heading"><div><h2>Comportamento do jogo</h2><p>Preferências aplicadas ao iniciar Minecraft.</p></div></div><div className="setting-row"><span><b>Minimizar ao iniciar</b><small>Recolhe o VEX quando o Minecraft abrir.</small></span><button className="secondary-button compact" onClick={() => onRuntimePreferencesChanged(mangohudEnabled, !minimizeOnLaunch)}>{minimizeOnLaunch ? "Ativado" : "Desativado"}</button></div><div className="setting-row"><span><b>MangoHud no Linux</b><small>Ativa a camada MangoHud quando ela estiver instalada no sistema.</small></span><button className="secondary-button compact" onClick={() => onRuntimePreferencesChanged(!mangohudEnabled, minimizeOnLaunch)}>{mangohudEnabled ? "Ativado" : "Desativado"}</button></div></section><section className="settings-group"><div className="settings-heading"><div><h2>Java detectado</h2><p>O launcher seleciona automaticamente uma versão compatível.</p></div></div>{javaRuntimes.map((runtime) => <div className="setting-row" key={runtime.path}><span><b>Java {runtime.major}</b><small>{runtime.path}</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: runtime.path }).catch((error) => notify(String(error)))}>Abrir</button></div>)}{!javaRuntimes.length && <div className="empty-state"><Code2 size={22} /><span>Nenhum Java encontrado.</span></div>}</section></>}
           {section === "help" && <section className="settings-group"><div className="settings-heading"><div><h2>Ajuda</h2><p>Tutoriais, documentação e diagnóstico.</p></div></div><div className="setting-row"><span><b>Tutorial do VEX</b><small>Veja novamente o guia completo do launcher.</small></span><button className="secondary-button compact" onClick={onOpenTutorial}>Iniciar tutorial</button></div><div className="setting-row"><span><b>Ajuda do Minecraft</b><small>Conta, instalação e solução de problemas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://help.minecraft.net")}>Abrir</button></div><div className="setting-row"><span><b>Pasta de logs</b><small>{storageRoot}\logs</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: `${storageRoot}\\logs` }).catch((error) => notify(String(error)))}>Abrir</button></div></section>}
@@ -921,7 +976,7 @@ function SettingsPage({ username, skinDataUrl, onSkinChanged, onSaveProfile, mic
 const tutorialSteps: Array<{ page: Page; title: string; text: string }> = [
   { page: "home", title: "Seu ponto de partida", text: "O Início mostra o perfil ativo, a última instância jogada e ações rápidas." },
   { page: "library", title: "Sua biblioteca", text: "Crie, clone, configure e apague instâncias. Abra uma instância para cuidar dos mundos e conteúdos dela." },
-  { page: "discover", title: "Descobrir conteúdo", text: "Pesquise no Modrinth, veja todas as versões e instale apenas em instâncias compatíveis." },
+  { page: "discover", title: "Descobrir conteúdo", text: "Pesquise no Modrinth e CurseForge, filtre por versão e instale apenas em instâncias compatíveis." },
   { page: "server", title: "Servidor local", text: "Crie e controle seu servidor. Para amigos entrarem pela internet, o caminho mais simples é configurar um túnel no playit.gg." },
   { page: "logs", title: "Console e diagnóstico", text: "Acompanhe o Java em tempo real, copie o log e ajuste o tamanho do texto para investigar erros." },
   { page: "settings", title: "Conta e preferências", text: "Troque perfil, skin, tema, pasta do jogo e veja novamente este tutorial." }
@@ -930,13 +985,27 @@ const tutorialSteps: Array<{ page: Page; title: string; text: string }> = [
 function TutorialOverlay({ initialPage, navigate, close }: { initialPage: Page; navigate: (page: Page) => void; close: () => void }) {
   const initial = Math.max(0, tutorialSteps.findIndex((step) => step.page === initialPage));
   const [step, setStep] = useState(initial);
+  const [spotlight, setSpotlight] = useState<DOMRect | null>(null);
   const current = tutorialSteps[step];
   useEffect(() => navigate(current.page), [step]);
+  useEffect(() => {
+    const update = () => {
+      const target = document.querySelector<HTMLElement>(`[data-tutorial-page="${current.page}"]`);
+      setSpotlight(target?.getBoundingClientRect() ?? null);
+    };
+    const timer = window.setTimeout(update, 180);
+    window.addEventListener("resize", update);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", update);
+    };
+  }, [current.page]);
   const finish = () => {
     localStorage.setItem("vex-tutorial-completed", "true");
     close();
   };
-  return <div className="tutorial-overlay"><section className="tutorial-card"><span className="tutorial-count">{step + 1} / {tutorialSteps.length}</span><CircleHelp size={25} /><span className="overline">Guia do VEX</span><h1>{current.title}</h1><p>{current.text}</p><div className="tutorial-progress">{tutorialSteps.map((_, index) => <span key={index} className={index <= step ? "active" : ""} />)}</div><div className="modal-actions"><button className="text-button" onClick={finish}>Pular tutorial</button>{step > 0 && <button className="secondary-button" onClick={() => setStep(step - 1)}>Voltar</button>}<button className="primary-button" onClick={() => step === tutorialSteps.length - 1 ? finish() : setStep(step + 1)}>{step === tutorialSteps.length - 1 ? "Concluir" : "Próximo"}<ChevronRight size={16} /></button></div></section></div>;
+  const spotStyle = spotlight ? { left: spotlight.left - 5, top: spotlight.top - 5, width: spotlight.width + 10, height: spotlight.height + 10 } : undefined;
+  return <div className={`tutorial-overlay tutorial-${current.page}`}>{spotlight && <div className="tutorial-spotlight" style={spotStyle} />}<section className="tutorial-card"><span className="tutorial-count">{step + 1} / {tutorialSteps.length}</span><CircleHelp size={25} /><span className="overline">Guia do VEX</span><h1>{current.title}</h1><p>{current.text}</p><div className="tutorial-progress">{tutorialSteps.map((_, index) => <span key={index} className={index <= step ? "active" : ""} />)}</div><div className="modal-actions"><button className="text-button" onClick={finish}>Pular tutorial</button>{step > 0 && <button className="secondary-button" onClick={() => setStep(step - 1)}>Voltar</button>}<button className="primary-button" onClick={() => step === tutorialSteps.length - 1 ? finish() : setStep(step + 1)}>{step === tutorialSteps.length - 1 ? "Concluir" : "Próximo"}<ChevronRight size={16} /></button></div></section></div>;
 }
 
 function App() {
@@ -1009,6 +1078,7 @@ function App() {
       const account = await invoke<MicrosoftAccount>("get_microsoft_account").catch(() => null);
       if (mounted && account) {
         setMicrosoftAccount(account);
+        if (account.skin_data_url) setMicrosoftSkinDataUrl(account.skin_data_url);
         if (account.logged_in) {
           const cachedSkin = await invoke<string | null>("get_microsoft_skin_data_url").catch(() => null);
           if (mounted && cachedSkin) setMicrosoftSkinDataUrl(cachedSkin);
@@ -1041,6 +1111,7 @@ function App() {
             const account = await invoke<MicrosoftAccount>("complete_microsoft_login", { code: payload });
             if (!mounted) return;
             setMicrosoftAccount(account);
+            if (account.skin_data_url) setMicrosoftSkinDataUrl(account.skin_data_url);
             const cachedSkin = await invoke<string | null>("get_microsoft_skin_data_url").catch(() => null);
             if (mounted && cachedSkin) setMicrosoftSkinDataUrl(cachedSkin);
             setUseOfflineProfile(false);
@@ -1103,6 +1174,7 @@ function App() {
     try {
       const account = await invoke<MicrosoftAccount>("use_microsoft_account");
       setMicrosoftAccount(account);
+      if (account.skin_data_url) setMicrosoftSkinDataUrl(account.skin_data_url);
       const cachedSkin = await invoke<string | null>("get_microsoft_skin_data_url").catch(() => null);
       if (cachedSkin) setMicrosoftSkinDataUrl(cachedSkin);
       setUseOfflineProfile(false);
@@ -1134,14 +1206,14 @@ function App() {
       await invoke("launch_instance", { versionId: instance.versionId, profileDir: instance.profileDir });
       notify(`${instance.name} iniciado`, 6500);
       await refreshInstances().catch(() => undefined);
-      if (minimizeOnLaunch) await invoke("minimize_window").catch(() => undefined);
+      if (minimizeOnLaunch) await invoke("hide_window_to_tray").catch(() => invoke("minimize_window").catch(() => undefined));
     } catch (error) {
       notify(`Falha: ${String(error)}`, 6500);
     }
   };
   const navigate = (next: Page) => { setPage(next); setSidebarOpen(false); };
   const activeUsername = !useOfflineProfile && microsoftAccount.logged_in ? microsoftAccount.username : username;
-  const activeSkin = !useOfflineProfile && microsoftAccount.logged_in ? (microsoftSkinDataUrl ?? microsoftAccount.skin_url) : skinDataUrl;
+  const activeSkin = !useOfflineProfile && microsoftAccount.logged_in ? (microsoftAccount.skin_data_url ?? microsoftSkinDataUrl ?? microsoftAccount.skin_url) : skinDataUrl;
   const accountLabel = !useOfflineProfile && microsoftAccount.logged_in ? "Conta Microsoft" : "Perfil offline";
   return (
     <div className="app-window">
@@ -1157,7 +1229,7 @@ function App() {
           {page === "discover" && <DiscoverPage appInstances={appInstances} />}
           {page === "server" && <ServerPage notify={notify} storageRoot={storageRoot} />}
           {page === "logs" && <LogsPage storageRoot={storageRoot} />}
-          {page === "settings" && <SettingsPage username={username} skinDataUrl={skinDataUrl} onSkinChanged={setSkinDataUrl} onSaveProfile={saveProfile} microsoftAccount={microsoftAccount} useOfflineProfile={useOfflineProfile} onMicrosoftLogin={() => void beginMicrosoftLogin()} onUseMicrosoft={() => void useMicrosoft()} onUseOffline={() => void chooseOffline()} onMicrosoftLogout={() => void logoutMicrosoft()} storageRoot={storageRoot} gameDirectory={gameDirectory} javaRuntimes={javaRuntimes} onGameDirectoryChanged={setGameDirectory} notify={notify} theme={theme} onThemeChanged={setTheme} onOpenTutorial={() => setTutorialOpen(true)} mangohudEnabled={mangohudEnabled} minimizeOnLaunch={minimizeOnLaunch} onRuntimePreferencesChanged={async (mangohud, minimize) => { setMangohudEnabled(mangohud); setMinimizeOnLaunch(minimize); await invoke("set_runtime_preferences", { mangohudEnabled: mangohud, minimizeOnLaunch: minimize }).catch((error) => notify(String(error))); }} />}
+          {page === "settings" && <SettingsPage username={username} skinDataUrl={skinDataUrl} microsoftSkinDataUrl={microsoftSkinDataUrl} onSkinChanged={setSkinDataUrl} onSaveProfile={saveProfile} microsoftAccount={microsoftAccount} useOfflineProfile={useOfflineProfile} onMicrosoftLogin={() => void beginMicrosoftLogin()} onUseMicrosoft={() => void useMicrosoft()} onUseOffline={() => void chooseOffline()} onMicrosoftLogout={() => void logoutMicrosoft()} storageRoot={storageRoot} gameDirectory={gameDirectory} javaRuntimes={javaRuntimes} onGameDirectoryChanged={setGameDirectory} notify={notify} theme={theme} onThemeChanged={setTheme} onOpenTutorial={() => setTutorialOpen(true)} mangohudEnabled={mangohudEnabled} minimizeOnLaunch={minimizeOnLaunch} onRuntimePreferencesChanged={async (mangohud, minimize) => { setMangohudEnabled(mangohud); setMinimizeOnLaunch(minimize); await invoke("set_runtime_preferences", { mangohudEnabled: mangohud, minimizeOnLaunch: minimize }).catch((error) => notify(String(error))); }} />}
         </main>
       </div>
       {!booting && onboardingCompleted && !tutorialOpen && <button className="floating-help" aria-label="Abrir tutorial desta área" title="Ajuda e tutorial" onClick={() => setTutorialOpen(true)}><CircleHelp size={20} /></button>}
