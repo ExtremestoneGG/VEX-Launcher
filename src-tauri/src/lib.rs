@@ -215,6 +215,7 @@ struct MicrosoftAccountStatus {
     username: String,
     uuid: String,
     skin_url: Option<String>,
+    skin_data_url: Option<String>,
 }
 
 impl Default for MicrosoftAccountStatus {
@@ -225,6 +226,7 @@ impl Default for MicrosoftAccountStatus {
             username: String::new(),
             uuid: String::new(),
             skin_url: None,
+            skin_data_url: None,
         }
     }
 }
@@ -249,6 +251,56 @@ fn microsoft_account_path() -> PathBuf {
     storage_root()
         .join("profiles")
         .join("microsoft-account.json")
+}
+
+fn microsoft_skin_path() -> PathBuf {
+    storage_root().join("profiles").join("microsoft-skin.png")
+}
+
+fn normalized_minecraft_texture_url(value: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(value).ok()?;
+    if url.host_str() != Some("textures.minecraft.net") || !url.path().starts_with("/texture/") {
+        return None;
+    }
+    url.set_scheme("https").ok()?;
+    Some(url.to_string())
+}
+
+fn image_data_url(path: &Path, mime: &str) -> Option<String> {
+    fs::read(path)
+        .ok()
+        .map(|bytes| format!("data:{mime};base64,{}", BASE64_STANDARD.encode(bytes)))
+}
+
+async fn cache_microsoft_skin(
+    client: &reqwest::Client,
+    skin_url: Option<&str>,
+) -> Result<(), String> {
+    let Some(url) = skin_url.and_then(normalized_minecraft_texture_url) else {
+        return Ok(());
+    };
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .bytes()
+        .await
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > 10 * 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(String::from(
+            "A skin Microsoft recebida não é um PNG válido.",
+        ));
+    }
+    let path = microsoft_skin_path();
+    fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| String::from("Caminho de skin Microsoft inválido."))?,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
 #[cfg(windows)]
@@ -339,6 +391,116 @@ fn unprotect_secret(_protected: &str) -> Result<String, String> {
     ))
 }
 
+fn curseforge_key_path() -> PathBuf {
+    storage_root()
+        .join("secrets")
+        .join("curseforge-api-key.dat")
+}
+
+fn read_curseforge_api_key() -> Result<String, String> {
+    if let Ok(key) = env::var("CURSEFORGE_API_KEY") {
+        let key = key.trim().to_owned();
+        if !key.is_empty() {
+            return Ok(key);
+        }
+    }
+    let stored = fs::read_to_string(curseforge_key_path())
+        .map_err(|_| String::from("Configure a chave do CurseForge em Rede e fontes."))?;
+    #[cfg(windows)]
+    let key = unprotect_secret(stored.trim())?;
+    #[cfg(not(windows))]
+    let key = String::from_utf8(
+        BASE64_STANDARD
+            .decode(stored.trim())
+            .map_err(|_| String::from("Chave do CurseForge inválida."))?,
+    )
+    .map_err(|_| String::from("Chave do CurseForge inválida."))?;
+    if key.trim().is_empty() {
+        return Err(String::from(
+            "Configure a chave do CurseForge em Rede e fontes.",
+        ));
+    }
+    Ok(key.trim().to_owned())
+}
+
+fn write_curseforge_api_key(key: &str) -> Result<(), String> {
+    let clean = key.trim();
+    if clean.len() < 16 || clean.chars().any(char::is_whitespace) {
+        return Err(String::from(
+            "A chave informada não parece ser uma chave válida do CurseForge.",
+        ));
+    }
+    let path = curseforge_key_path();
+    fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| String::from("Caminho de segredos inválido."))?,
+    )
+    .map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    let protected = protect_secret(clean)?;
+    #[cfg(not(windows))]
+    let protected = BASE64_STANDARD.encode(clean.as_bytes());
+    fs::write(&path, protected).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn curseforge_client() -> Result<reqwest::Client, String> {
+    let key = read_curseforge_api_key()?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-api-key",
+        reqwest::header::HeaderValue::from_str(&key)
+            .map_err(|_| String::from("Chave do CurseForge inválida."))?,
+    );
+    reqwest::Client::builder()
+        .user_agent("VEXLauncher/0.6")
+        .default_headers(headers)
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_curseforge_status() -> CurseForgeStatus {
+    if env::var("CURSEFORGE_API_KEY")
+        .ok()
+        .is_some_and(|key| !key.trim().is_empty())
+    {
+        return CurseForgeStatus {
+            configured: true,
+            source: String::from("Ambiente"),
+        };
+    }
+    CurseForgeStatus {
+        configured: read_curseforge_api_key().is_ok(),
+        source: if curseforge_key_path().is_file() {
+            String::from("Protegida no dispositivo")
+        } else {
+            String::from("Não configurada")
+        },
+    }
+}
+
+#[tauri::command]
+fn save_curseforge_api_key(key: String) -> Result<CurseForgeStatus, String> {
+    write_curseforge_api_key(&key)?;
+    Ok(get_curseforge_status())
+}
+
+#[tauri::command]
+fn remove_curseforge_api_key() -> Result<CurseForgeStatus, String> {
+    let path = curseforge_key_path();
+    if path.is_file() {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    }
+    Ok(get_curseforge_status())
+}
+
 fn read_microsoft_account() -> Option<StoredMicrosoftAccount> {
     fs::read_to_string(microsoft_account_path())
         .ok()
@@ -373,7 +535,11 @@ fn microsoft_account_status_value() -> MicrosoftAccountStatus {
             active: !settings.use_offline_profile,
             username: account.username,
             uuid: account.uuid,
-            skin_url: account.skin_url,
+            skin_url: account
+                .skin_url
+                .as_deref()
+                .and_then(normalized_minecraft_texture_url),
+            skin_data_url: image_data_url(&microsoft_skin_path(), "image/png"),
         })
         .unwrap_or_default()
 }
@@ -416,6 +582,42 @@ struct ModrinthInstallTarget {
     download_url: String,
     filename: String,
     sha512: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurseForgeInstallTarget {
+    instance_name: String,
+    game_version: String,
+    loader: String,
+    destination_dir: String,
+    download_url: String,
+    filename: String,
+    md5: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CurseForgeStatus {
+    configured: bool,
+    source: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CurseForgeSearchResult {
+    projects: Vec<CurseForgeProject>,
+    total: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CurseForgeProject {
+    id: String,
+    name: String,
+    author: String,
+    kind: String,
+    description: String,
+    versions: Vec<String>,
+    downloads: u64,
+    icon_url: Option<String>,
+    page_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -864,6 +1066,7 @@ async fn refresh_microsoft_account(
         minecraft_account_from_microsoft_token(client, &microsoft_access_token, new_refresh_token)
             .await?;
     write_microsoft_account(&account)?;
+    let _ = cache_microsoft_skin(client, account.skin_url.as_deref()).await;
     Ok(account)
 }
 
@@ -874,17 +1077,21 @@ fn get_microsoft_account() -> MicrosoftAccountStatus {
 
 #[tauri::command]
 async fn get_microsoft_skin_data_url() -> Result<Option<String>, String> {
-    let Some(url) = read_microsoft_account().and_then(|account| account.skin_url) else {
+    if let Some(data_url) = image_data_url(&microsoft_skin_path(), "image/png") {
+        return Ok(Some(data_url));
+    }
+    let Some(url) = read_microsoft_account()
+        .and_then(|account| account.skin_url)
+        .as_deref()
+        .and_then(normalized_minecraft_texture_url)
+    else {
         return Ok(None);
     };
-    if !url.starts_with("https://") {
-        return Err(String::from("URL de skin Microsoft inválida."));
-    }
     let bytes = reqwest::Client::builder()
         .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?
-        .get(url)
+        .get(&url)
         .send()
         .await
         .map_err(|error| error.to_string())?
@@ -893,10 +1100,17 @@ async fn get_microsoft_skin_data_url() -> Result<Option<String>, String> {
         .bytes()
         .await
         .map_err(|error| error.to_string())?;
-    Ok(Some(format!(
-        "data:image/png;base64,{}",
-        BASE64_STANDARD.encode(bytes)
-    )))
+    if bytes.len() > 10 * 1024 * 1024 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(String::from(
+            "A skin Microsoft recebida não é um PNG válido.",
+        ));
+    }
+    let path = microsoft_skin_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+    Ok(image_data_url(&path, "image/png"))
 }
 
 #[tauri::command]
@@ -1008,6 +1222,7 @@ async fn complete_microsoft_login(code: String) -> Result<MicrosoftAccountStatus
         minecraft_account_from_microsoft_token(&client, &microsoft_access_token, refresh_token)
             .await?;
     write_microsoft_account(&account)?;
+    let _ = cache_microsoft_skin(&client, account.skin_url.as_deref()).await;
     let mut settings = read_settings();
     settings.use_offline_profile = false;
     settings.onboarding_completed = true;
@@ -1042,6 +1257,10 @@ fn logout_microsoft_account() -> Result<MicrosoftAccountStatus, String> {
     if path.is_file() {
         fs::remove_file(path).map_err(|error| error.to_string())?;
     }
+    let skin_path = microsoft_skin_path();
+    if skin_path.is_file() {
+        fs::remove_file(skin_path).map_err(|error| error.to_string())?;
+    }
     let mut settings = read_settings();
     settings.use_offline_profile = true;
     settings.onboarding_completed = true;
@@ -1052,6 +1271,11 @@ fn logout_microsoft_account() -> Result<MicrosoftAccountStatus, String> {
 #[tauri::command]
 fn minimize_window(window: tauri::Window) -> Result<(), String> {
     window.minimize().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_window_to_tray(window: tauri::Window) -> Result<(), String> {
+    window.hide().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1151,6 +1375,21 @@ fn validate_modrinth_download_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_curseforge_download_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| String::from("URL de download inválida."))?;
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if parsed.scheme() != "https"
+        || !(host == "edge.forgecdn.net"
+            || host == "mediafilez.forgecdn.net"
+            || host.ends_with(".forgecdn.net"))
+    {
+        return Err(String::from(
+            "Por segurança, o conteúdo precisa vir da rede oficial do CurseForge.",
+        ));
+    }
+    Ok(())
+}
+
 fn modified_unix(path: &Path) -> u64 {
     fs::metadata(path)
         .and_then(|metadata| metadata.modified())
@@ -1160,22 +1399,11 @@ fn modified_unix(path: &Path) -> u64 {
         .unwrap_or_default()
 }
 
-fn detect_loader(id: &str, raw_json: &str) -> String {
-    let lowercase = format!("{id} {raw_json}").to_lowercase();
-    for loader in ["fabric", "quilt", "neoforge", "forge"] {
-        if lowercase.contains(loader) {
-            return loader.to_owned();
-        }
-    }
-    String::from("vanilla")
-}
-
 #[tauri::command]
 fn list_installed_instances() -> Vec<InstalledInstance> {
     let settings = read_settings();
     let game_dir = PathBuf::from(&settings.game_directory);
     let mut instances = Vec::new();
-    let mut represented_versions = HashSet::new();
 
     let modpacks_dir = game_dir.join("modpacks");
     if let Ok(entries) = fs::read_dir(&modpacks_dir) {
@@ -1194,7 +1422,6 @@ fn list_installed_instances() -> Vec<InstalledInstance> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            represented_versions.insert(version_id.clone());
             instances.push(InstalledInstance {
                 id: json
                     .get("Id")
@@ -1251,7 +1478,6 @@ fn list_installed_instances() -> Vec<InstalledInstance> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            represented_versions.insert(version_id.clone());
             instances.push(InstalledInstance {
                 id: json
                     .get("Id")
@@ -1291,42 +1517,6 @@ fn list_installed_instances() -> Vec<InstalledInstance> {
         }
     }
 
-    let versions_dir = game_dir.join("versions");
-    if let Ok(entries) = fs::read_dir(&versions_dir) {
-        for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
-            let dir = entry.path();
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if represented_versions.contains(&id) {
-                continue;
-            }
-            let raw = fs::read_to_string(dir.join(format!("{id}.json"))).unwrap_or_default();
-            let json = serde_json::from_str::<Value>(&raw).unwrap_or(Value::Null);
-            let mc_version = json
-                .get("inheritsFrom")
-                .and_then(Value::as_str)
-                .unwrap_or(&id)
-                .to_owned();
-            let loader = detect_loader(&id, &raw);
-            instances.push(InstalledInstance {
-                name: id.clone(),
-                id: id.clone(),
-                loader,
-                mc_version,
-                version_id: id.clone(),
-                profile_dir: game_dir
-                    .join("profiles")
-                    .join(&id)
-                    .to_string_lossy()
-                    .into_owned(),
-                icon_path: None,
-                kind: String::from("version"),
-                size_mb: (directory_size(&dir) as f64 / 1_048_576.0 * 10.0).round() / 10.0,
-                modified_unix: modified_unix(&dir),
-                last_played_unix: 0,
-            });
-        }
-    }
-
     instances.sort_by(|left, right| {
         right
             .last_played_unix
@@ -1338,6 +1528,7 @@ fn list_installed_instances() -> Vec<InstalledInstance> {
 
 #[tauri::command]
 async fn create_instance(
+    app: tauri::AppHandle,
     name: String,
     version: String,
     loader: String,
@@ -1348,10 +1539,8 @@ async fn create_instance(
     if clean_name.is_empty() || clean_version.is_empty() {
         return Err(String::from("Informe um nome e uma versão."));
     }
-    if !["vanilla", "fabric", "quilt"].contains(&clean_loader.as_str()) {
-        return Err(String::from(
-            "Forge e NeoForge exigem o instalador oficial e ainda não estão prontos nesta versão. Escolha Vanilla, Fabric ou Quilt.",
-        ));
+    if !["vanilla", "fabric", "quilt", "forge", "neoforge"].contains(&clean_loader.as_str()) {
+        return Err(String::from("Loader desconhecido."));
     }
     let settings = read_settings();
     let game_dir = PathBuf::from(&settings.game_directory);
@@ -1388,6 +1577,18 @@ async fn create_instance(
             .build()
             .map_err(|error| error.to_string())?;
         install_quilt_profile(&client, &game_dir, clean_version).await?
+    } else if clean_loader == "forge" || clean_loader == "neoforge" {
+        install_official_loader_profile(
+            &app,
+            &game_dir,
+            clean_version,
+            &clean_loader,
+            None,
+            "create-instance",
+            8,
+            94,
+        )
+        .await?
     } else {
         clean_version.to_owned()
     };
@@ -1623,12 +1824,21 @@ fn collect_java_in_dir(root: &Path, depth: usize, output: &mut Vec<PathBuf>) {
     if depth == 0 || !root.is_dir() {
         return;
     }
-    for candidate in [
+    #[cfg(windows)]
+    let candidates = [
         root.join("bin").join("java.exe"),
         root.join("bin").join("javaw.exe"),
         root.join("java.exe"),
         root.join("javaw.exe"),
-    ] {
+    ];
+    #[cfg(not(windows))]
+    let candidates = [
+        root.join("bin").join("java"),
+        root.join("bin").join("java"),
+        root.join("java"),
+        root.join("java"),
+    ];
+    for candidate in candidates {
         if candidate.is_file() {
             output.push(candidate);
         }
@@ -1703,10 +1913,14 @@ fn detect_java_runtimes() -> Vec<JavaRuntime> {
             }
         }
     }
-    if let Ok(path) = env::var("PATH") {
-        for dir in path.split(';') {
-            for filename in ["java.exe", "javaw.exe"] {
-                let candidate = PathBuf::from(dir).join(filename);
+    if let Some(path) = env::var_os("PATH") {
+        for dir in env::split_paths(&path) {
+            #[cfg(windows)]
+            let filenames = ["java.exe", "javaw.exe"];
+            #[cfg(not(windows))]
+            let filenames = ["java", "java"];
+            for filename in filenames {
+                let candidate = dir.join(filename);
                 if candidate.is_file() {
                     candidates.push(candidate);
                 }
@@ -1761,9 +1975,15 @@ async fn ensure_java_runtime(
         .user_agent("VEXLauncher/0.5")
         .build()
         .map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    let platform = "windows";
+    #[cfg(target_os = "linux")]
+    let platform = "linux";
+    #[cfg(target_os = "macos")]
+    let platform = "mac";
     let assets: Value = client
         .get(format!(
-            "https://api.adoptium.net/v3/assets/latest/{required_java}/hotspot?architecture=x64&image_type=jre&os=windows&vendor=eclipse"
+            "https://api.adoptium.net/v3/assets/latest/{required_java}/hotspot?architecture=x64&image_type=jre&os={platform}&vendor=eclipse"
         ))
         .send()
         .await
@@ -1779,10 +1999,10 @@ async fn ensure_java_runtime(
         .and_then(|asset| asset.get("binary"))
         .and_then(|binary| binary.get("package"))
         .ok_or_else(|| {
-            format!("Não foi possível localizar o Java {required_java} para Windows.")
+            format!("Não foi possível localizar o Java {required_java} para este sistema.")
         })?;
     let download_url = package.get("link").and_then(Value::as_str).ok_or_else(|| {
-        format!("Não foi possível localizar o Java {required_java} para Windows.")
+        format!("Não foi possível localizar o Java {required_java} para este sistema.")
     })?;
     let expected_checksum = package
         .get("checksum")
@@ -1811,7 +2031,7 @@ async fn ensure_java_runtime(
     emit_progress(
         app,
         operation,
-        format!("Instalando Java {required_java} no disco D"),
+        format!("Instalando Java {required_java} na pasta protegida do VEX"),
         download_end.saturating_add(1),
         false,
     );
@@ -1823,32 +2043,50 @@ async fn ensure_java_runtime(
         fs::remove_dir_all(&staging).map_err(|error| error.to_string())?;
     }
     fs::create_dir_all(&staging).map_err(|error| error.to_string())?;
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|error| error.to_string())?;
-    let archive_len = archive.len().max(1);
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
-        let Some(relative) = entry.enclosed_name() else {
-            continue;
-        };
-        let output = staging.join(relative);
-        if entry.is_dir() {
-            fs::create_dir_all(&output).map_err(|error| error.to_string())?;
-        } else {
-            if let Some(parent) = output.parent() {
-                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    {
+        let mut archive =
+            zip::ZipArchive::new(Cursor::new(bytes)).map_err(|error| error.to_string())?;
+        let archive_len = archive.len().max(1);
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+            let Some(relative) = entry.enclosed_name() else {
+                continue;
+            };
+            let output = staging.join(relative);
+            if entry.is_dir() {
+                fs::create_dir_all(&output).map_err(|error| error.to_string())?;
+            } else {
+                if let Some(parent) = output.parent() {
+                    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                }
+                let mut file = fs::File::create(output).map_err(|error| error.to_string())?;
+                std::io::copy(&mut entry, &mut file).map_err(|error| error.to_string())?;
             }
-            let mut file = fs::File::create(output).map_err(|error| error.to_string())?;
-            std::io::copy(&mut entry, &mut file).map_err(|error| error.to_string())?;
+            let percent = download_end.saturating_add(
+                (((index + 1) as f64 / archive_len as f64) * f64::from(end - download_end)) as u8,
+            );
+            emit_progress(
+                app,
+                operation,
+                format!("Instalando Java {required_java}"),
+                percent,
+                false,
+            );
         }
-        let percent = download_end.saturating_add(
-            (((index + 1) as f64 / archive_len as f64) * f64::from(end - download_end)) as u8,
-        );
+    }
+    #[cfg(not(windows))]
+    {
+        let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
+        let mut archive = tar::Archive::new(decoder);
+        archive
+            .unpack(&staging)
+            .map_err(|error| error.to_string())?;
         emit_progress(
             app,
             operation,
             format!("Instalando Java {required_java}"),
-            percent,
+            end.saturating_sub(1),
             false,
         );
     }
@@ -2058,6 +2296,17 @@ fn maven_path(coordinate: &str) -> Option<String> {
     ))
 }
 
+fn current_os_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    return "windows";
+    #[cfg(target_os = "linux")]
+    return "linux";
+    #[cfg(target_os = "macos")]
+    return "osx";
+    #[allow(unreachable_code)]
+    "unknown"
+}
+
 fn should_use_library(library: &Value) -> bool {
     let Some(rules) = library.get("rules").and_then(Value::as_array) else {
         return true;
@@ -2077,12 +2326,76 @@ fn should_use_library(library: &Value) -> bool {
             .and_then(Value::as_str)
         {
             None => allowed = action == "allow",
-            Some("windows") => allowed = action == "allow",
+            Some(name) if name == current_os_name() => allowed = action == "allow",
             Some(_) if action == "disallow" => allowed = true,
             _ => {}
         }
     }
     allowed
+}
+
+fn argument_rules_allow(argument: &Value) -> bool {
+    let Some(rules) = argument.get("rules").and_then(Value::as_array) else {
+        return true;
+    };
+    let mut allowed = false;
+    for rule in rules {
+        let action = rule
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("disallow");
+        let os_matches = rule
+            .get("os")
+            .and_then(|os| os.get("name"))
+            .and_then(Value::as_str)
+            .is_none_or(|name| name == current_os_name());
+        let features_match = rule
+            .get("features")
+            .and_then(Value::as_object)
+            .is_none_or(|features| features.is_empty());
+        if os_matches && features_match {
+            allowed = action == "allow";
+        }
+    }
+    allowed
+}
+
+fn version_arguments(version: &Value, kind: &str) -> Vec<String> {
+    version
+        .get("arguments")
+        .and_then(|arguments| arguments.get(kind))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|argument| argument_rules_allow(argument))
+        .flat_map(|argument| {
+            if let Some(value) = argument.as_str() {
+                vec![value.to_owned()]
+            } else if let Some(value) = argument.get("value") {
+                value
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .or_else(|| value.as_str().map(|value| vec![value.to_owned()]))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        })
+        .collect()
+}
+
+fn replace_launch_placeholders(value: &str, replacements: &[(&str, &str)]) -> String {
+    replacements
+        .iter()
+        .fold(value.to_owned(), |result, (key, replacement)| {
+            result.replace(key, replacement)
+        })
 }
 
 fn extract_native(archive_path: &Path, destination: &Path) -> Result<(), String> {
@@ -2175,9 +2488,13 @@ async fn prepare_libraries(
 
         let native_key = library
             .get("natives")
-            .and_then(|natives| natives.get("windows"))
+            .and_then(|natives| natives.get(current_os_name()))
             .and_then(Value::as_str)
-            .unwrap_or("natives-windows")
+            .unwrap_or_else(|| match current_os_name() {
+                "linux" => "natives-linux",
+                "osx" => "natives-osx",
+                _ => "natives-windows",
+            })
             .replace("${arch}", "64");
         if let Some(native) = library
             .get("downloads")
@@ -2344,6 +2661,318 @@ fn append_log(log_path: &Path, message: &str) {
     if let Ok(mut log) = OpenOptions::new().create(true).append(true).open(log_path) {
         let _ = writeln!(log, "[Launcher] {message}");
     }
+}
+
+fn curseforge_class_id(project_type: &str) -> Option<u32> {
+    match project_type {
+        "mod" => Some(6),
+        "modpack" => Some(4471),
+        "resourcepack" => Some(12),
+        "shader" => Some(6552),
+        "plugin" => Some(5),
+        _ => None,
+    }
+}
+
+fn curseforge_loader_type(loader: &str) -> Option<u32> {
+    match loader.to_ascii_lowercase().as_str() {
+        "forge" => Some(1),
+        "fabric" => Some(4),
+        "quilt" => Some(5),
+        "neoforge" => Some(6),
+        _ => None,
+    }
+}
+
+fn curseforge_kind(class_id: u64) -> String {
+    match class_id {
+        4471 => String::from("Modpack"),
+        12 => String::from("Textura"),
+        6552 => String::from("Shader"),
+        5 => String::from("Plugin"),
+        _ => String::from("Mod"),
+    }
+}
+
+fn curseforge_file_download(file: &Value) -> Option<(String, String, Option<String>)> {
+    let url = file.get("downloadUrl").and_then(Value::as_str)?.to_owned();
+    let filename = file
+        .get("fileName")
+        .or_else(|| file.get("displayName"))
+        .and_then(Value::as_str)
+        .unwrap_or("conteudo.jar")
+        .to_owned();
+    let md5 = file
+        .get("hashes")
+        .and_then(Value::as_array)
+        .and_then(|hashes| {
+            hashes
+                .iter()
+                .find(|hash| hash.get("algo").and_then(Value::as_u64) == Some(2))
+        })
+        .and_then(|hash| hash.get("value"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Some((url, filename, md5))
+}
+
+async fn curseforge_files(
+    client: &reqwest::Client,
+    project_id: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+    page_size: u32,
+) -> Result<Vec<Value>, String> {
+    let mut request = client
+        .get(format!(
+            "https://api.curseforge.com/v1/mods/{project_id}/files"
+        ))
+        .query(&[("pageSize", page_size.min(50).to_string())]);
+    if let Some(version) = game_version.filter(|value| !value.is_empty()) {
+        request = request.query(&[("gameVersion", version)]);
+    }
+    if let Some(loader_type) = loader.and_then(curseforge_loader_type) {
+        request = request.query(&[("modLoaderType", loader_type.to_string())]);
+    }
+    let response: Value = request
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(response
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn search_curseforge(
+    query: String,
+    project_type: String,
+    game_version: String,
+    loader: String,
+    index: u32,
+    page_size: u32,
+) -> Result<CurseForgeSearchResult, String> {
+    let client = curseforge_client()?;
+    let mut request = client
+        .get("https://api.curseforge.com/v1/mods/search")
+        .query(&[
+            ("gameId", String::from("432")),
+            ("searchFilter", query.trim().to_owned()),
+            ("index", index.to_string()),
+            ("pageSize", page_size.clamp(1, 50).to_string()),
+            ("sortField", String::from("6")),
+            ("sortOrder", String::from("desc")),
+        ]);
+    if let Some(class_id) = curseforge_class_id(&project_type) {
+        request = request.query(&[("classId", class_id.to_string())]);
+    }
+    if !game_version.trim().is_empty() {
+        request = request.query(&[("gameVersion", game_version.trim())]);
+    }
+    if let Some(loader_type) = curseforge_loader_type(&loader) {
+        request = request.query(&[("modLoaderType", loader_type.to_string())]);
+    }
+    let response: Value = request
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    let projects = response
+        .get("data")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|project| {
+            let mut versions = Vec::new();
+            for version in project
+                .get("latestFilesIndexes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item.get("gameVersion").and_then(Value::as_str))
+            {
+                if !versions.iter().any(|known| known == version) {
+                    versions.push(version.to_owned());
+                }
+            }
+            let class_id = project.get("classId").and_then(Value::as_u64).unwrap_or(6);
+            CurseForgeProject {
+                id: project
+                    .get("id")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: project
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Projeto CurseForge")
+                    .to_owned(),
+                author: project
+                    .get("authors")
+                    .and_then(Value::as_array)
+                    .and_then(|authors| authors.first())
+                    .and_then(|author| author.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("CurseForge")
+                    .to_owned(),
+                kind: curseforge_kind(class_id),
+                description: project
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                versions,
+                downloads: project
+                    .get("downloadCount")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default() as u64,
+                icon_url: project
+                    .get("logo")
+                    .and_then(|logo| logo.get("thumbnailUrl").or_else(|| logo.get("url")))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                page_url: project
+                    .get("links")
+                    .and_then(|links| links.get("websiteUrl"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            }
+        })
+        .collect();
+    let total = response
+        .get("pagination")
+        .and_then(|pagination| pagination.get("totalCount"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    Ok(CurseForgeSearchResult { projects, total })
+}
+
+#[tauri::command]
+async fn get_curseforge_project_versions(project_id: String) -> Result<Vec<String>, String> {
+    let client = curseforge_client()?;
+    let files = curseforge_files(&client, &project_id, None, None, 50).await?;
+    let mut versions = Vec::new();
+    for version in files
+        .iter()
+        .filter_map(|file| file.get("gameVersions").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|version| {
+            version
+                .chars()
+                .next()
+                .is_some_and(|value| value.is_ascii_digit())
+        })
+    {
+        if !versions.iter().any(|known| known == version) {
+            versions.push(version.to_owned());
+        }
+    }
+    Ok(versions)
+}
+
+#[tauri::command]
+async fn get_curseforge_install_targets(
+    project_id: String,
+    project_type: String,
+    game_version: String,
+) -> Result<Vec<CurseForgeInstallTarget>, String> {
+    let client = curseforge_client()?;
+    let folder = match project_type.as_str() {
+        "mod" => "mods",
+        "resourcepack" => "resourcepacks",
+        "shader" => "shaderpacks",
+        "plugin" => "plugins",
+        _ => return Err(String::from("Este tipo usa o instalador de modpacks.")),
+    };
+    let mut targets = Vec::new();
+    for instance in list_installed_instances()
+        .into_iter()
+        .filter(|instance| instance.mc_version == game_version)
+    {
+        let files = curseforge_files(
+            &client,
+            &project_id,
+            Some(&game_version),
+            (project_type == "mod").then_some(instance.loader.as_str()),
+            20,
+        )
+        .await?;
+        let Some((download_url, filename, md5)) = files.iter().find_map(curseforge_file_download)
+        else {
+            continue;
+        };
+        targets.push(CurseForgeInstallTarget {
+            instance_name: instance.name,
+            game_version: instance.mc_version,
+            loader: instance.loader,
+            destination_dir: PathBuf::from(instance.profile_dir)
+                .join(folder)
+                .to_string_lossy()
+                .into_owned(),
+            download_url,
+            filename,
+            md5,
+        });
+    }
+    Ok(targets)
+}
+
+#[tauri::command]
+async fn install_curseforge_target(
+    app: tauri::AppHandle,
+    target: CurseForgeInstallTarget,
+) -> Result<String, String> {
+    let operation = "install-content";
+    validate_curseforge_download_url(&target.download_url)?;
+    let settings = read_settings();
+    let destination_dir = PathBuf::from(&target.destination_dir);
+    let game_dir = PathBuf::from(&settings.game_directory);
+    let servers = storage_root().join("servers");
+    if !destination_dir.starts_with(&game_dir) && !destination_dir.starts_with(&servers) {
+        return Err(String::from("Destino fora das pastas protegidas do VEX."));
+    }
+    let filename = Path::new(&target.filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| String::from("Nome de arquivo inválido."))?;
+    fs::create_dir_all(&destination_dir).map_err(|error| error.to_string())?;
+    emit_progress(&app, operation, "Baixando conteúdo do CurseForge", 5, false);
+    let client = curseforge_client()?;
+    let bytes = download_bytes_with_progress(
+        &app,
+        operation,
+        "Baixando conteúdo do CurseForge",
+        &client,
+        &target.download_url,
+        8,
+        88,
+    )
+    .await?;
+    if let Some(expected) = target.md5.as_deref() {
+        let actual = format!("{:x}", md5::compute(&bytes));
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(String::from(
+                "O arquivo não passou na verificação MD5 do CurseForge.",
+            ));
+        }
+    }
+    let destination = destination_dir.join(filename);
+    fs::write(&destination, bytes).map_err(|error| error.to_string())?;
+    emit_progress(&app, operation, "Conteúdo instalado", 100, true);
+    Ok(destination.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -2658,6 +3287,208 @@ async fn install_quilt_profile(
     Ok(profile_id)
 }
 
+fn minecraft_version_parts(version: &str) -> (u32, u32, u32) {
+    let mut parts = version
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or_default());
+    (
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+    )
+}
+
+fn required_java_for_minecraft(version: &str) -> u32 {
+    let (_, minor, patch) = minecraft_version_parts(version);
+    if minor > 20 || (minor == 20 && patch >= 5) {
+        21
+    } else if minor >= 18 {
+        17
+    } else if minor >= 17 {
+        16
+    } else {
+        8
+    }
+}
+
+fn metadata_versions(xml: &str) -> Vec<String> {
+    xml.split("<version>")
+        .skip(1)
+        .filter_map(|part| part.split("</version>").next())
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+async fn resolve_official_loader_version(
+    client: &reqwest::Client,
+    minecraft: &str,
+    loader: &str,
+    requested: Option<&str>,
+) -> Result<String, String> {
+    if let Some(requested) = requested.filter(|value| !value.trim().is_empty()) {
+        return Ok(
+            if loader == "forge" && !requested.starts_with(&format!("{minecraft}-")) {
+                format!("{minecraft}-{requested}")
+            } else {
+                requested.to_owned()
+            },
+        );
+    }
+    let metadata_url = if loader == "forge" {
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
+    } else {
+        "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
+    };
+    let xml = client
+        .get(metadata_url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .text()
+        .await
+        .map_err(|error| error.to_string())?;
+    let versions = metadata_versions(&xml);
+    let found = if loader == "forge" {
+        let prefix = format!("{minecraft}-");
+        versions
+            .into_iter()
+            .rev()
+            .find(|version| version.starts_with(&prefix))
+    } else {
+        let (_, minor, patch) = minecraft_version_parts(minecraft);
+        let prefix = format!("{minor}.{patch}.");
+        versions
+            .into_iter()
+            .rev()
+            .find(|version| version.starts_with(&prefix))
+    };
+    found.ok_or_else(|| format!("{loader} não está disponível para Minecraft {minecraft}."))
+}
+
+fn find_installed_loader_profile(game_dir: &Path, minecraft: &str, loader: &str) -> Option<String> {
+    let versions = game_dir.join("versions");
+    let mut candidates: Vec<(u64, String)> = fs::read_dir(versions)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            let lower = id.to_ascii_lowercase();
+            let json = entry.path().join(format!("{id}.json"));
+            (json.is_file()
+                && lower.contains(loader)
+                && (lower.contains(minecraft) || loader == "neoforge"))
+                .then(|| (modified_unix(&json), id))
+        })
+        .collect();
+    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    candidates.into_iter().next().map(|(_, id)| id)
+}
+
+async fn install_official_loader_profile(
+    app: &tauri::AppHandle,
+    game_dir: &Path,
+    minecraft: &str,
+    loader: &str,
+    requested_loader_version: Option<&str>,
+    operation: &str,
+    start: u8,
+    end: u8,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("VEXLauncher/0.6")
+        .build()
+        .map_err(|error| error.to_string())?;
+    emit_progress(
+        app,
+        operation,
+        format!("Consultando versões do {loader}"),
+        start,
+        false,
+    );
+    let loader_version =
+        resolve_official_loader_version(&client, minecraft, loader, requested_loader_version)
+            .await?;
+    if let Some(existing) = find_installed_loader_profile(game_dir, minecraft, loader) {
+        if requested_loader_version.is_none()
+            || existing
+                .to_ascii_lowercase()
+                .contains(&loader_version.to_ascii_lowercase())
+        {
+            return Ok(existing);
+        }
+    }
+    let required_java = required_java_for_minecraft(minecraft);
+    let runtime = ensure_java_runtime(
+        app,
+        required_java,
+        operation,
+        start.saturating_add(3),
+        start.saturating_add(22),
+    )
+    .await?;
+    let (url, filename) = if loader == "forge" {
+        (
+            format!(
+                "https://maven.minecraftforge.net/net/minecraftforge/forge/{loader_version}/forge-{loader_version}-installer.jar"
+            ),
+            format!("forge-{loader_version}-installer.jar"),
+        )
+    } else {
+        (
+            format!(
+                "https://maven.neoforged.net/releases/net/neoforged/neoforge/{loader_version}/neoforge-{loader_version}-installer.jar"
+            ),
+            format!("neoforge-{loader_version}-installer.jar"),
+        )
+    };
+    let installer_dir = storage_root().join("cache").join("loaders");
+    fs::create_dir_all(&installer_dir).map_err(|error| error.to_string())?;
+    let installer = installer_dir.join(filename);
+    if !installer.is_file() {
+        let bytes = download_bytes_with_progress(
+            app,
+            operation,
+            &format!("Baixando instalador oficial do {loader}"),
+            &client,
+            &url,
+            start.saturating_add(24),
+            end.saturating_sub(25),
+        )
+        .await?;
+        fs::write(&installer, bytes).map_err(|error| error.to_string())?;
+    }
+    fs::create_dir_all(game_dir).map_err(|error| error.to_string())?;
+    emit_progress(
+        app,
+        operation,
+        format!("Executando instalador oficial do {loader}"),
+        end.saturating_sub(20),
+        false,
+    );
+    let output = hidden_command(&runtime.path)
+        .arg("-jar")
+        .arg(&installer)
+        .arg("--installClient")
+        .arg(game_dir)
+        .output()
+        .map_err(|error| format!("Não foi possível executar o instalador do {loader}: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "O instalador oficial do {loader} falhou: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    emit_progress(app, operation, format!("{loader} instalado"), end, false);
+    find_installed_loader_profile(game_dir, minecraft, loader).ok_or_else(|| {
+        format!("O instalador do {loader} terminou, mas o perfil criado não foi encontrado.")
+    })
+}
+
 #[tauri::command]
 async fn install_modrinth_modpack(
     app: tauri::AppHandle,
@@ -2779,22 +3610,20 @@ async fn install_modrinth_modpack(
         .and_then(Value::as_str)
         .ok_or_else(|| String::from("Modpack sem versão Minecraft."))?;
     let fabric_loader = dependencies.get("fabric-loader").and_then(Value::as_str);
+    let quilt_loader = dependencies.get("quilt-loader").and_then(Value::as_str);
+    let forge_loader = dependencies.get("forge").and_then(Value::as_str);
+    let neoforge_loader = dependencies.get("neoforge").and_then(Value::as_str);
     let loader = if fabric_loader.is_some() {
         "fabric"
-    } else if dependencies.contains_key("quilt-loader") {
+    } else if quilt_loader.is_some() {
         "quilt"
-    } else if dependencies.contains_key("neoforge") {
+    } else if neoforge_loader.is_some() {
         "neoforge"
-    } else if dependencies.contains_key("forge") {
+    } else if forge_loader.is_some() {
         "forge"
     } else {
         "vanilla"
     };
-    if loader != "fabric" && loader != "vanilla" {
-        return Err(format!(
-            "Instalação automática de {loader} será adicionada na próxima etapa."
-        ));
-    }
 
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
@@ -2865,6 +3694,32 @@ async fn install_modrinth_modpack(
     emit_progress(&app, operation, "Preparando loader e versão", 87, false);
     let version_id = if let Some(fabric) = fabric_loader {
         install_fabric_profile(&client, &game_dir, minecraft, fabric).await?
+    } else if quilt_loader.is_some() {
+        install_quilt_profile(&client, &game_dir, minecraft).await?
+    } else if let Some(forge) = forge_loader {
+        install_official_loader_profile(
+            &app,
+            &game_dir,
+            minecraft,
+            "forge",
+            Some(forge),
+            operation,
+            86,
+            94,
+        )
+        .await?
+    } else if let Some(neoforge) = neoforge_loader {
+        install_official_loader_profile(
+            &app,
+            &game_dir,
+            minecraft,
+            "neoforge",
+            Some(neoforge),
+            operation,
+            86,
+            94,
+        )
+        .await?
     } else {
         minecraft.to_owned()
     };
@@ -2892,7 +3747,7 @@ async fn install_modrinth_modpack(
         "IconPath": icon_path.clone().unwrap_or_default(),
         "McVersion": minecraft,
         "Loader": loader,
-        "LoaderVersion": fabric_loader.unwrap_or_default(),
+        "LoaderVersion": fabric_loader.or(quilt_loader).or(forge_loader).or(neoforge_loader).unwrap_or_default(),
         "VersionId": version_id,
         "InstallDate": "installed-by-mine-launcher"
     });
@@ -2906,6 +3761,253 @@ async fn install_modrinth_modpack(
         id: metadata["Id"].as_str().unwrap_or_default().to_owned(),
         name: metadata["Name"].as_str().unwrap_or_default().to_owned(),
         loader: loader.to_owned(),
+        mc_version: minecraft.to_owned(),
+        version_id: metadata["VersionId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        profile_dir: instance_dir.to_string_lossy().into_owned(),
+        icon_path,
+        kind: String::from("modpack"),
+        size_mb: (directory_size(&instance_dir) as f64 / 1_048_576.0 * 10.0).round() / 10.0,
+        modified_unix: modified_unix(&instance_dir),
+        last_played_unix: 0,
+    })
+}
+
+#[tauri::command]
+async fn install_curseforge_modpack(
+    app: tauri::AppHandle,
+    project_id: String,
+    project_name: String,
+    author: String,
+    game_version: String,
+) -> Result<InstalledInstance, String> {
+    let operation = "install-modpack";
+    emit_progress(
+        &app,
+        operation,
+        "Consultando arquivos do CurseForge",
+        3,
+        false,
+    );
+    let settings = read_settings();
+    let game_dir = PathBuf::from(&settings.game_directory);
+    let client = curseforge_client()?;
+    let files = curseforge_files(&client, &project_id, Some(&game_version), None, 50).await?;
+    let (pack_url, _, expected_md5) = files
+        .iter()
+        .find_map(curseforge_file_download)
+        .ok_or_else(|| {
+            String::from(
+                "O autor não permitiu download externo para esta versão. Abra a página do projeto no CurseForge.",
+            )
+        })?;
+    validate_curseforge_download_url(&pack_url)?;
+    let pack_bytes = download_bytes_with_progress(
+        &app,
+        operation,
+        "Baixando modpack do CurseForge",
+        &client,
+        &pack_url,
+        7,
+        24,
+    )
+    .await?;
+    if let Some(expected) = expected_md5.as_deref() {
+        let actual = format!("{:x}", md5::compute(&pack_bytes));
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(String::from(
+                "O modpack não passou na verificação MD5 do CurseForge.",
+            ));
+        }
+    }
+    let instance_name = safe_directory_name(&project_name);
+    let instance_dir = game_dir.join("modpacks").join(&instance_name);
+    fs::create_dir_all(&instance_dir).map_err(|error| error.to_string())?;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(pack_bytes)).map_err(|error| error.to_string())?;
+    let mut manifest_text = String::new();
+    archive
+        .by_name("manifest.json")
+        .map_err(|_| String::from("O modpack não contém manifest.json."))?
+        .read_to_string(&mut manifest_text)
+        .map_err(|error| error.to_string())?;
+    let manifest: Value =
+        serde_json::from_str(&manifest_text).map_err(|error| error.to_string())?;
+    let minecraft = manifest
+        .get("minecraft")
+        .and_then(|minecraft| minecraft.get("version"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| String::from("Manifesto CurseForge sem versão do Minecraft."))?;
+    let loader_id = manifest
+        .get("minecraft")
+        .and_then(|minecraft| minecraft.get("modLoaders"))
+        .and_then(Value::as_array)
+        .and_then(|loaders| {
+            loaders
+                .iter()
+                .find(|loader| loader.get("primary").and_then(Value::as_bool) == Some(true))
+                .or_else(|| loaders.first())
+        })
+        .and_then(|loader| loader.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("vanilla");
+    let (loader, loader_version) = loader_id
+        .split_once('-')
+        .map(|(loader, version)| (loader.to_ascii_lowercase(), version))
+        .unwrap_or_else(|| (String::from("vanilla"), ""));
+    emit_progress(
+        &app,
+        operation,
+        "Extraindo configurações do modpack",
+        28,
+        false,
+    );
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        if entry.is_dir() {
+            continue;
+        }
+        let Some(enclosed) = entry.enclosed_name() else {
+            continue;
+        };
+        let relative = enclosed
+            .strip_prefix("overrides")
+            .or_else(|_| enclosed.strip_prefix("client-overrides"));
+        let Ok(relative) = relative else { continue };
+        let destination = instance_dir.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let mut output = fs::File::create(destination).map_err(|error| error.to_string())?;
+        std::io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
+    }
+    let manifest_files = manifest
+        .get("files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let total_files = manifest_files.len().max(1);
+    fs::create_dir_all(instance_dir.join("mods")).map_err(|error| error.to_string())?;
+    for (index, file_ref) in manifest_files.into_iter().enumerate() {
+        let project = file_ref
+            .get("projectID")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| String::from("Referência de projeto inválida no modpack."))?;
+        let file = file_ref
+            .get("fileID")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| String::from("Referência de arquivo inválida no modpack."))?;
+        let response: Value = client
+            .get(format!(
+                "https://api.curseforge.com/v1/mods/{project}/files/{file}"
+            ))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?
+            .error_for_status()
+            .map_err(|error| error.to_string())?
+            .json()
+            .await
+            .map_err(|error| error.to_string())?;
+        let file_data = response
+            .get("data")
+            .ok_or_else(|| String::from("Arquivo ausente na resposta do CurseForge."))?;
+        let (url, filename, expected) = curseforge_file_download(file_data).ok_or_else(|| {
+            format!(
+                "O autor do projeto {project} bloqueou downloads externos. Instale este arquivo pela página do CurseForge."
+            )
+        })?;
+        validate_curseforge_download_url(&url)?;
+        let bytes = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| error.to_string())?
+            .error_for_status()
+            .map_err(|error| error.to_string())?
+            .bytes()
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Some(expected) = expected {
+            let actual = format!("{:x}", md5::compute(&bytes));
+            if !actual.eq_ignore_ascii_case(&expected) {
+                return Err(format!("O arquivo {filename} falhou na verificação MD5."));
+            }
+        }
+        fs::write(instance_dir.join("mods").join(filename), bytes)
+            .map_err(|error| error.to_string())?;
+        emit_progress(
+            &app,
+            operation,
+            format!("Baixando arquivos do modpack ({}/{total_files})", index + 1),
+            32 + (((index + 1) as f64 / total_files as f64) * 48.0) as u8,
+            false,
+        );
+    }
+    let version_id = match loader.as_str() {
+        "fabric" => install_fabric_profile(&client, &game_dir, minecraft, loader_version).await?,
+        "quilt" => install_quilt_profile(&client, &game_dir, minecraft).await?,
+        "forge" | "neoforge" => {
+            install_official_loader_profile(
+                &app,
+                &game_dir,
+                minecraft,
+                &loader,
+                Some(loader_version),
+                operation,
+                82,
+                95,
+            )
+            .await?
+        }
+        _ => minecraft.to_owned(),
+    };
+    let project_response: Value = client
+        .get(format!("https://api.curseforge.com/v1/mods/{project_id}"))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    let icon_url = project_response
+        .get("data")
+        .and_then(|project| project.get("logo"))
+        .and_then(|logo| logo.get("thumbnailUrl").or_else(|| logo.get("url")))
+        .and_then(Value::as_str);
+    let mut icon_path = None;
+    if let Some(url) = icon_url {
+        let destination = instance_dir.join("icon.png");
+        if download_to(&client, url, &destination).await.is_ok() {
+            icon_path = Some(destination.to_string_lossy().into_owned());
+        }
+    }
+    let metadata = serde_json::json!({
+        "Id": format!("curseforge-{project_id}"),
+        "Name": project_name,
+        "Author": author,
+        "Source": "CurseForge",
+        "IconPath": icon_path.clone().unwrap_or_default(),
+        "McVersion": minecraft,
+        "Loader": loader,
+        "LoaderVersion": loader_version,
+        "VersionId": version_id,
+        "InstallDate": "installed-by-vex-launcher"
+    });
+    fs::write(
+        instance_dir.join("instance.json"),
+        serde_json::to_string_pretty(&metadata).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    emit_progress(&app, operation, "Modpack instalado", 100, true);
+    Ok(InstalledInstance {
+        id: metadata["Id"].as_str().unwrap_or_default().to_owned(),
+        name: metadata["Name"].as_str().unwrap_or_default().to_owned(),
+        loader,
         mc_version: minecraft.to_owned(),
         version_id: metadata["VersionId"]
             .as_str()
@@ -3035,6 +4137,47 @@ async fn launch_instance(
         .and_then(Value::as_str)
         .unwrap_or("release");
     let separator = if cfg!(windows) { ";" } else { ":" };
+    let classpath_text = classpath.join(separator);
+    let game_dir_text = profile_dir.to_string_lossy().into_owned();
+    let assets_dir_text = assets_dir.to_string_lossy().into_owned();
+    let natives_dir_text = natives_dir.to_string_lossy().into_owned();
+    let libraries_dir_text = game_dir.join("libraries").to_string_lossy().into_owned();
+    let uuid_text = uuid.clone();
+    let replacements = [
+        ("${auth_player_name}", username),
+        ("${version_name}", version_id.as_str()),
+        ("${game_directory}", game_dir_text.as_str()),
+        ("${assets_root}", assets_dir_text.as_str()),
+        ("${assets_index_name}", asset_index.as_str()),
+        ("${auth_uuid}", uuid_text.as_str()),
+        ("${auth_access_token}", access_token),
+        ("${clientid}", ""),
+        ("${auth_xuid}", ""),
+        ("${user_type}", user_type),
+        ("${version_type}", version_type),
+        ("${user_properties}", "{}"),
+        ("${natives_directory}", natives_dir_text.as_str()),
+        ("${launcher_name}", "VEXLauncher"),
+        ("${launcher_version}", "0.6"),
+        ("${classpath}", classpath_text.as_str()),
+        ("${classpath_separator}", separator),
+        ("${library_directory}", libraries_dir_text.as_str()),
+    ];
+    let extra_jvm: Vec<String> = version_arguments(&version, "jvm")
+        .into_iter()
+        .filter(|argument| {
+            argument != "-cp"
+                && !argument.contains("${classpath}")
+                && !argument.contains("${natives_directory}")
+                && !argument.contains("${launcher_name}")
+                && !argument.contains("${launcher_version}")
+        })
+        .map(|argument| replace_launch_placeholders(&argument, &replacements))
+        .collect();
+    let extra_game: Vec<String> = version_arguments(&version, "game")
+        .into_iter()
+        .map(|argument| replace_launch_placeholders(&argument, &replacements))
+        .collect();
     let mut command = hidden_command(&runtime.path);
     if settings.mangohud_enabled {
         command.env("MANGOHUD", "1");
@@ -3047,9 +4190,10 @@ async fn launch_instance(
             natives_dir.to_string_lossy()
         ))
         .arg("-Dminecraft.launcher.brand=VEXLauncher")
-        .arg("-Dminecraft.launcher.version=0.5")
+        .arg("-Dminecraft.launcher.version=0.6")
+        .args(extra_jvm)
         .arg("-cp")
-        .arg(classpath.join(separator))
+        .arg(classpath_text)
         .arg(main_class)
         .arg("--username")
         .arg(username)
@@ -3069,6 +4213,7 @@ async fn launch_instance(
         .arg(user_type)
         .arg("--versionType")
         .arg(version_type)
+        .args(extra_game)
         .current_dir(&game_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -3488,8 +4633,46 @@ pub fn run() {
     let webview_data = storage_root().join("webview-data");
     let _ = fs::create_dir_all(&webview_data);
     std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", webview_data);
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
 
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(desktop)]
+            {
+                let icon = app
+                    .default_window_icon()
+                    .cloned()
+                    .ok_or_else(|| String::from("Ícone do VEX não encontrado."))?;
+                tauri::tray::TrayIconBuilder::new()
+                    .icon(icon)
+                    .tooltip("VEX Launcher")
+                    .build(app)?;
+            }
+            Ok(())
+        })
+        .on_tray_icon_event(|app, event| {
+            #[cfg(desktop)]
+            if let tauri::tray::TrayIconEvent::Click {
+                button: tauri::tray::MouseButton::Left,
+                button_state: tauri::tray::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             storage_status,
             get_launcher_settings,
@@ -3505,10 +4688,14 @@ pub fn run() {
             use_microsoft_account,
             logout_microsoft_account,
             minimize_window,
+            hide_window_to_tray,
             toggle_maximize_window,
             close_window,
             start_window_dragging,
             clear_launcher_cache,
+            get_curseforge_status,
+            save_curseforge_api_key,
+            remove_curseforge_api_key,
             read_image_data_url,
             list_installed_instances,
             create_instance,
@@ -3520,6 +4707,11 @@ pub fn run() {
             detect_java_runtimes,
             launch_instance,
             read_latest_log,
+            search_curseforge,
+            get_curseforge_project_versions,
+            get_curseforge_install_targets,
+            install_curseforge_target,
+            install_curseforge_modpack,
             get_modrinth_install_targets,
             install_modrinth_target,
             install_modrinth_modpack,
@@ -3563,5 +4755,39 @@ mod tests {
     fn probes_instances_and_java_without_panicking() {
         let _ = list_installed_instances();
         let _ = detect_java_runtimes();
+    }
+
+    #[test]
+    fn microsoft_skin_urls_are_upgraded_and_restricted() {
+        assert_eq!(
+            normalized_minecraft_texture_url(
+                "http://textures.minecraft.net/texture/0123456789abcdef"
+            ),
+            Some(String::from(
+                "https://textures.minecraft.net/texture/0123456789abcdef"
+            ))
+        );
+        assert!(normalized_minecraft_texture_url("https://example.com/texture/nope").is_none());
+        assert!(
+            normalized_minecraft_texture_url("https://textures.minecraft.net/other/nope").is_none()
+        );
+    }
+
+    #[test]
+    fn official_loader_metadata_is_parsed() {
+        let versions = metadata_versions(
+            "<metadata><versioning><versions><version>1.20.1-47.4.20</version><version>21.1.200</version></versions></versioning></metadata>",
+        );
+        assert_eq!(versions, ["1.20.1-47.4.20", "21.1.200"]);
+        assert_eq!(required_java_for_minecraft("1.20.1"), 17);
+        assert_eq!(required_java_for_minecraft("1.21.1"), 21);
+    }
+
+    #[test]
+    fn curseforge_loader_mapping_matches_official_api() {
+        assert_eq!(curseforge_loader_type("Forge"), Some(1));
+        assert_eq!(curseforge_loader_type("Fabric"), Some(4));
+        assert_eq!(curseforge_loader_type("Quilt"), Some(5));
+        assert_eq!(curseforge_loader_type("NeoForge"), Some(6));
     }
 }

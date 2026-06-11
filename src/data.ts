@@ -25,6 +25,8 @@ export type Project = {
   color: string;
   icon: string;
   iconUrl?: string;
+  source?: "Modrinth" | "CurseForge";
+  pageUrl?: string;
 };
 
 export const instances: Instance[] = [

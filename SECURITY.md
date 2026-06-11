@@ -1,29 +1,27 @@
-# Security Policy
+# Política de segurança
 
-## Data privacy
+## Dados locais
 
-VEX Launcher stores player profiles, skins, logs, instances, servers, downloaded
-Java runtimes, and Minecraft data locally. It prefers `D:\MineLauncher` when a D
-drive exists and otherwise uses the local Windows application-data folder.
-These folders are not part of the source repository and must never be committed.
+O VEX armazena perfis, skins, logs, instâncias, servidores, mundos, configurações e runtimes Java localmente. Esses dados não fazem parte do repositório e nunca devem ser enviados em commits, issues ou relatórios públicos.
 
-On Windows, the Microsoft refresh token is encrypted for the current Windows
-user with DPAPI before it is written to the local VEX profile folder. Passwords
-are entered only in the official Microsoft login page and are never handled by
-VEX.
+O launcher não envia mundos, skins, nomes de usuário, logs ou arquivos de instâncias para serviços próprios. A rede é usada somente para autenticação solicitada pelo jogador e para baixar metadados, conteúdo e runtimes de fontes conhecidas.
 
-The launcher does not upload local worlds, skins, logs, usernames, or instance
-files. Network requests are used only to retrieve public Minecraft metadata,
-content, runtimes, and links requested by the player.
+## Credenciais
 
-## Automatic Java runtime
+- No Windows, o token de renovação da conta Microsoft e a chave do CurseForge são protegidos para o usuário atual com DPAPI.
+- No Linux, a chave do CurseForge é armazenada em um arquivo local acessível somente pelo próprio usuário.
+- Senhas Microsoft são digitadas apenas na página oficial da Microsoft e nunca passam pelo VEX.
+- Nenhuma chave, token ou dado pessoal deve ser incluído no código-fonte.
 
-When a compatible Java runtime is missing, VEX Launcher downloads an Eclipse
-Temurin runtime from the official Eclipse Adoptium API and installs it inside
-the VEX data folder. The archive is verified with the SHA-256 checksum provided
-by Adoptium before extraction. It does not modify the system Java installation.
+## Downloads automáticos
 
-## Reporting a vulnerability
+- Java: Eclipse Adoptium, verificado com SHA-256.
+- Modrinth: arquivos oficiais, verificados com SHA-512 quando disponível.
+- CurseForge: arquivos da CDN oficial, verificados com MD5 quando disponível.
+- Forge e NeoForge: instaladores obtidos dos repositórios Maven oficiais.
 
-Do not publish vulnerabilities or private player data in a public issue.
-Contact the project maintainer privately before sharing reproduction details.
+O VEX restringe instalações automáticas às pastas configuradas do Minecraft, das instâncias e dos servidores.
+
+## Relatar uma vulnerabilidade
+
+Não publique vulnerabilidades que incluam tokens, caminhos pessoais, logs privados ou dados de jogadores em uma issue pública. Entre em contato de forma privada com o responsável pelo projeto e inclua somente os passos mínimos para reproduzir o problema.

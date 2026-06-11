@@ -1,12 +1,13 @@
-# Contributing to VEX Launcher
+# Como contribuir com o VEX Launcher
 
-Thank you for helping improve VEX Launcher.
+Obrigado por ajudar a melhorar o VEX.
 
-## Before opening a change
+## Antes de enviar uma alteração
 
-- Never include player data, worlds, skins, logs, tokens, or local settings.
-- Keep downloads on trusted HTTPS sources and verify integrity when available.
-- Preserve the local-first privacy model described in `SECURITY.md`.
-- Run `npm run build` and `cargo check --manifest-path src-tauri/Cargo.toml`.
+- Nunca inclua mundos, skins, logs, tokens, chaves, configurações ou outros dados de jogadores.
+- Use fontes HTTPS conhecidas e verifique a integridade dos downloads quando houver hash oficial.
+- Preserve o modelo de privacidade local descrito em `SECURITY.md`.
+- Mantenha textos visíveis ao usuário em português claro.
+- Execute `npm run build` e `cargo check --manifest-path src-tauri/Cargo.toml`.
 
-Security issues containing private information should not be posted publicly.
+Problemas de segurança com informações privadas não devem ser publicados em issues abertas.
