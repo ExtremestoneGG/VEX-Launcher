@@ -4,13 +4,13 @@ VEX is a free and open-source Minecraft launcher focused on making the path from
 
 The project started as a design experiment built with AI-assisted programming. Its goal is to remain lightweight, direct, and accessible for players using either an official Microsoft account or an offline profile.
 
-## VEX 0.6
+## VEX 0.7
 
 - Combined Modrinth and CurseForge discovery with source, version, loader, and content-type filters.
 - Dedicated pages for mods, modpacks, shaders, resource packs, and plugins.
 - Vanilla, Fabric, Quilt, Forge, and NeoForge instances.
-- Forge and NeoForge profiles built from Prism Launcher metadata, with compatible Minecraft versions shown directly in the instance editor.
-- Automatic download of ForgeWrapper, installer dependencies, Maven files, and loader-specific launch arguments.
+- Native Forge and NeoForge installation using their official Maven repositories and installers.
+- Compatible Minecraft versions shown directly in the instance editor.
 - Modrinth and CurseForge modpack installation with integrity checks when the source provides hashes.
 - Automatic compatible Java runtime downloads from Eclipse Adoptium, isolated inside VEX data.
 - Saved offline profiles, a skin library, and official Microsoft login on Windows.
@@ -23,14 +23,9 @@ The project started as a design experiment built with AI-assisted programming. I
 
 ## Forge And NeoForge
 
-VEX follows the same metadata approach used by Prism Launcher instead of opening the official Forge installer. This allows VEX to:
+VEX has its own Forge and NeoForge integration. It reads the official Maven catalogs, selects a compatible loader version, prepares the launcher environment required by the official installer, runs the installation silently, and validates the exact generated profile before adding the instance.
 
-- show only Minecraft versions that have a compatible Forge or NeoForge release;
-- select the latest compatible loader build automatically;
-- download required libraries and installer data without an interactive installer;
-- use the correct ForgeWrapper arguments on Windows and Linux.
-
-Prism metadata is consumed from [meta.prismlauncher.org](https://meta.prismlauncher.org/v1/).
+This flow does not depend on Prism Launcher metadata or ForgeWrapper.
 
 ## CurseForge
 
