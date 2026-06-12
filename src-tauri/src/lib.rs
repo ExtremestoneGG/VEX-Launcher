@@ -120,6 +120,26 @@ struct LauncherSettings {
     minimize_on_launch: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredOfflineSkin {
+    id: String,
+    name: String,
+    path: String,
+    model: String,
+    created_unix: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct OfflineSkinSummary {
+    id: String,
+    name: String,
+    path: String,
+    model: String,
+    created_unix: u64,
+    data_url: String,
+    active: bool,
+}
+
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
@@ -255,6 +275,82 @@ fn microsoft_account_path() -> PathBuf {
 
 fn microsoft_skin_path() -> PathBuf {
     storage_root().join("profiles").join("microsoft-skin.png")
+}
+
+fn offline_skin_library_dir() -> PathBuf {
+    storage_root().join("profiles").join("skins")
+}
+
+fn offline_skin_library_path() -> PathBuf {
+    offline_skin_library_dir().join("library.json")
+}
+
+fn write_offline_skin_library(skins: &[StoredOfflineSkin]) -> Result<(), String> {
+    let path = offline_skin_library_path();
+    fs::create_dir_all(
+        path.parent()
+            .ok_or_else(|| String::from("Caminho da biblioteca de skins inválido."))?,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(
+        path,
+        serde_json::to_string_pretty(skins).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn read_offline_skin_library() -> Vec<StoredOfflineSkin> {
+    let mut skins: Vec<StoredOfflineSkin> = fs::read_to_string(offline_skin_library_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    skins.retain(|skin| Path::new(&skin.path).is_file());
+
+    if let Some(active_path) = read_settings()
+        .offline_skin_path
+        .filter(|path| Path::new(path).is_file())
+    {
+        if !skins.iter().any(|skin| skin.path == active_path) {
+            let id = Sha256::digest(active_path.as_bytes())[..12]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            skins.push(StoredOfflineSkin {
+                id,
+                name: String::from("Skin anterior"),
+                path: active_path,
+                model: String::from("auto-detect"),
+                created_unix: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or_default(),
+            });
+        }
+    }
+    let _ = write_offline_skin_library(&skins);
+    skins
+}
+
+fn skin_summary(skin: &StoredOfflineSkin, active_path: Option<&str>) -> OfflineSkinSummary {
+    OfflineSkinSummary {
+        id: skin.id.clone(),
+        name: skin.name.clone(),
+        path: skin.path.clone(),
+        model: skin.model.clone(),
+        created_unix: skin.created_unix,
+        data_url: image_data_url(Path::new(&skin.path), "image/png").unwrap_or_default(),
+        active: active_path == Some(skin.path.as_str()),
+    }
+}
+
+fn list_skin_summaries() -> Vec<OfflineSkinSummary> {
+    let active_path = read_settings().offline_skin_path;
+    let mut skins = read_offline_skin_library();
+    skins.sort_by(|left, right| right.created_unix.cmp(&left.created_unix));
+    skins
+        .iter()
+        .map(|skin| skin_summary(skin, active_path.as_deref()))
+        .collect()
 }
 
 fn normalized_minecraft_texture_url(value: &str) -> Option<String> {
@@ -4859,8 +4955,7 @@ fn save_offline_profile(
     Ok(settings)
 }
 
-#[tauri::command]
-fn save_offline_skin(bytes: Vec<u8>) -> Result<String, String> {
+fn validate_offline_skin_png(bytes: &[u8]) -> Result<(), String> {
     const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
     if bytes.len() > 10 * 1024 * 1024 {
         return Err(String::from("A skin precisa ter no máximo 10 MB."));
@@ -4884,27 +4979,128 @@ fn save_offline_skin(bytes: Vec<u8>) -> Result<String, String> {
             "Dimensões inválidas: {width}x{height}. Use 64x64 ou 64x32."
         ));
     }
+    Ok(())
+}
 
-    let skin_path = storage_root().join("profiles").join("offline_skin.png");
-    let parent = skin_path
-        .parent()
-        .ok_or_else(|| String::from("Caminho de skin inválido."))?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+fn normalized_skin_model(model: &str) -> String {
+    match model.trim().to_ascii_lowercase().as_str() {
+        "default" | "wide" => String::from("default"),
+        "slim" => String::from("slim"),
+        _ => String::from("auto-detect"),
+    }
+}
+
+#[tauri::command]
+fn list_saved_skins() -> Vec<OfflineSkinSummary> {
+    list_skin_summaries()
+}
+
+#[tauri::command]
+fn add_saved_skin(
+    bytes: Vec<u8>,
+    name: String,
+    model: String,
+) -> Result<OfflineSkinSummary, String> {
+    validate_offline_skin_png(&bytes)?;
+    let digest = Sha256::digest(&bytes);
+    let id: String = digest[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let skin_dir = offline_skin_library_dir();
+    fs::create_dir_all(&skin_dir).map_err(|error| error.to_string())?;
+    let skin_path = skin_dir.join(format!("{id}.png"));
     fs::write(&skin_path, bytes).map_err(|error| error.to_string())?;
+
+    let mut skins = read_offline_skin_library();
+    let clean_name = name.trim();
+    let model = normalized_skin_model(&model);
+    let created_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    if let Some(existing) = skins.iter_mut().find(|skin| skin.id == id) {
+        if !clean_name.is_empty() {
+            existing.name = clean_name.chars().take(48).collect();
+        }
+        existing.model = model.clone();
+    } else {
+        skins.push(StoredOfflineSkin {
+            id: id.clone(),
+            name: if clean_name.is_empty() {
+                format!("Skin {}", skins.len() + 1)
+            } else {
+                clean_name.chars().take(48).collect()
+            },
+            path: skin_path.to_string_lossy().into_owned(),
+            model: model.clone(),
+            created_unix,
+        });
+    }
+    write_offline_skin_library(&skins)?;
 
     let mut settings = read_settings();
     settings.offline_skin_path = Some(skin_path.to_string_lossy().into_owned());
     settings.use_offline_profile = true;
+    settings.onboarding_completed = true;
     write_settings(&settings)?;
-    Ok(skin_path.to_string_lossy().into_owned())
+    let stored = skins
+        .iter()
+        .find(|skin| skin.id == id)
+        .ok_or_else(|| String::from("A skin foi salva, mas não entrou na biblioteca."))?;
+    Ok(skin_summary(stored, settings.offline_skin_path.as_deref()))
+}
+
+#[tauri::command]
+fn activate_saved_skin(id: String) -> Result<OfflineSkinSummary, String> {
+    let skins = read_offline_skin_library();
+    let skin = skins
+        .iter()
+        .find(|skin| skin.id == id && Path::new(&skin.path).is_file())
+        .ok_or_else(|| String::from("Skin salva não encontrada."))?;
+    let mut settings = read_settings();
+    settings.offline_skin_path = Some(skin.path.clone());
+    settings.use_offline_profile = true;
+    settings.onboarding_completed = true;
+    write_settings(&settings)?;
+    Ok(skin_summary(skin, settings.offline_skin_path.as_deref()))
+}
+
+#[tauri::command]
+fn delete_saved_skin(id: String) -> Result<Vec<OfflineSkinSummary>, String> {
+    let mut skins = read_offline_skin_library();
+    let index = skins
+        .iter()
+        .position(|skin| skin.id == id)
+        .ok_or_else(|| String::from("Skin salva não encontrada."))?;
+    let removed = skins.remove(index);
+    let removed_path = PathBuf::from(&removed.path);
+    if removed_path.starts_with(offline_skin_library_dir()) {
+        let _ = fs::remove_file(&removed_path);
+    }
+    let mut settings = read_settings();
+    if settings.offline_skin_path.as_deref() == Some(removed.path.as_str()) {
+        settings.offline_skin_path = skins.first().map(|skin| skin.path.clone());
+    }
+    write_settings(&settings)?;
+    write_offline_skin_library(&skins)?;
+    Ok(list_skin_summaries())
+}
+
+#[tauri::command]
+fn save_offline_skin(bytes: Vec<u8>) -> Result<String, String> {
+    add_saved_skin(
+        bytes,
+        String::from("Skin salva"),
+        String::from("auto-detect"),
+    )
+    .map(|skin| skin.path)
 }
 
 #[tauri::command]
 fn remove_offline_skin() -> Result<(), String> {
     let mut settings = read_settings();
-    if let Some(path) = settings.offline_skin_path.take() {
-        let _ = fs::remove_file(path);
-    }
+    settings.offline_skin_path = None;
     write_settings(&settings)
 }
 
@@ -5299,6 +5495,10 @@ pub fn run() {
             check_modpack_update,
             install_modrinth_modpack,
             save_offline_profile,
+            list_saved_skins,
+            add_saved_skin,
+            activate_saved_skin,
+            delete_saved_skin,
             save_offline_skin,
             remove_offline_skin,
             get_server_profile,

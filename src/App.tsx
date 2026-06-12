@@ -26,6 +26,7 @@ import {
   Minus,
   MoreHorizontal,
   PackagePlus,
+  Pause,
   Play,
   Plus,
   RotateCcw,
@@ -34,6 +35,7 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  Shirt,
   SlidersHorizontal,
   Square,
   Sun,
@@ -51,12 +53,13 @@ import { useEffect } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { SkinViewer as SkinViewerType } from "skinview3d";
 import { projects, type Instance, type Project } from "./data";
 import steveFace from "./assets/steve-face.svg";
 import vexFace from "./assets/vexface.svg";
 import vexLogo from "./assets/vex.svg";
 
-type Page = "home" | "library" | "discover" | "server" | "logs" | "settings";
+type Page = "home" | "library" | "discover" | "skins" | "server" | "logs" | "settings";
 type DiscoverKind = "Tudo" | "Mods" | "Modpacks" | "Texturas" | "Shaders" | "Plugins";
 type DiscoverSource = "Todas" | "Modrinth" | "CurseForge";
 type BackendInstance = { id: string; name: string; loader: string; mc_version: string; version_id: string; profile_dir: string; icon_path?: string; kind: string; size_mb: number; modified_unix: number; last_played_unix: number };
@@ -76,11 +79,13 @@ type OperationProgress = { operation: string; label: string; percent: number; do
 type LoaderGameVersion = { game_version: string; loader_version: string; recommended: boolean };
 type ModpackUpdateStatus = { supported: boolean; update_available: boolean; project_id: string; project_name: string; author: string; game_version: string; current_version: string; latest_version: string; latest_version_id: string; message: string };
 type MinecraftInstallationScan = { path: string; label: string; versions: string[]; loaders: string[]; mods: number; worlds: number; resource_packs: number; shaders: number; size_mb: number; managed_by_vex: boolean };
+type SavedSkin = { id: string; name: string; path: string; model: "default" | "slim" | "auto-detect"; created_unix: number; data_url: string; active: boolean };
 
 const pageMeta: Record<Page, { title: string; eyebrow: string }> = {
   home: { title: "Início", eyebrow: "Visão geral" },
   library: { title: "Biblioteca", eyebrow: "Suas instâncias" },
   discover: { title: "Descobrir", eyebrow: "Conteúdo da comunidade" },
+  skins: { title: "Skins", eyebrow: "Seu visual" },
   server: { title: "Meu servidor", eyebrow: "Servidor local" },
   logs: { title: "Console", eyebrow: "Saída do launcher e Java" },
   settings: { title: "Configurações", eyebrow: "Preferências" }
@@ -157,11 +162,199 @@ function SkinFace({ skinDataUrl, label, large = false }: { skinDataUrl?: string;
   return <span className={`skin-face ${large ? "large" : ""}`} role="img" aria-label={`Rosto de ${label}`}><span className="skin-face-base" style={style} /><span className="skin-face-overlay" style={style} /></span>;
 }
 
+function SkinViewer3D({ skinDataUrl, model = "auto-detect", compact = false }: { skinDataUrl?: string; model?: SavedSkin["model"]; compact?: boolean }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<SkinViewerType | null>(null);
+  const skinSourceRef = useRef(skinDataUrl);
+  const modelRef = useRef(model);
+  const [rotating, setRotating] = useState(true);
+  skinSourceRef.current = skinDataUrl;
+  modelRef.current = model;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+    let disposed = false;
+    let observer: ResizeObserver | undefined;
+    void import("skinview3d").then(({ IdleAnimation, SkinViewer }) => {
+      if (disposed) return;
+      const viewer = new SkinViewer({
+        canvas,
+        width: Math.max(220, container.clientWidth),
+        height: Math.max(compact ? 250 : 390, container.clientHeight),
+        enableControls: true,
+        zoom: compact ? 0.72 : 0.78,
+        pixelRatio: "match-device"
+      });
+      viewer.autoRotate = true;
+      viewer.autoRotateSpeed = 0.42;
+      viewer.animation = new IdleAnimation();
+      viewer.animation.speed = 0.75;
+      viewer.globalLight.intensity = 2.3;
+      viewer.cameraLight.intensity = 0.7;
+      viewer.controls.enablePan = false;
+      viewerRef.current = viewer;
+      if (skinSourceRef.current) void viewer.loadSkin(skinSourceRef.current, { model: modelRef.current }).catch(() => undefined);
+      observer = new ResizeObserver(() => {
+        viewer.setSize(Math.max(220, container.clientWidth), Math.max(compact ? 250 : 390, container.clientHeight));
+      });
+      observer.observe(container);
+    });
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      viewerRef.current?.dispose();
+      viewerRef.current = null;
+    };
+  }, [compact]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    if (skinDataUrl) void viewer.loadSkin(skinDataUrl, { model }).catch(() => undefined);
+    else viewer.loadSkin(null);
+  }, [skinDataUrl, model]);
+
+  useEffect(() => {
+    if (viewerRef.current) viewerRef.current.autoRotate = rotating;
+  }, [rotating]);
+
+  return <div ref={containerRef} className={`skin-viewer-3d ${compact ? "compact" : ""}`}>
+    <canvas ref={canvasRef} aria-label="Visualização 3D da skin" />
+    {!skinDataUrl && <div className="skin-viewer-empty"><Shirt size={27} /><b>Nenhuma skin selecionada</b><span>Adicione uma skin PNG para visualizar em 3D.</span></div>}
+    <div className="skin-viewer-controls">
+      <IconButton label={rotating ? "Pausar rotação" : "Girar automaticamente"} onClick={() => setRotating(!rotating)}>{rotating ? <Pause size={16} /> : <RotateCcw size={16} />}</IconButton>
+      <IconButton label="Centralizar personagem" onClick={() => viewerRef.current?.resetCameraPose()}><RefreshCw size={16} /></IconButton>
+    </div>
+    <span className="skin-viewer-hint">Arraste para girar · use a roda para zoom</span>
+  </div>;
+}
+
+function AddSkinModal({ file, dataUrl, close, saved, notify }: { file: File; dataUrl: string; close: () => void; saved: (skin: SavedSkin) => void; notify: (message: string) => void }) {
+  const [name, setName] = useState(file.name.replace(/\.png$/i, ""));
+  const [model, setModel] = useState<SavedSkin["model"]>("auto-detect");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+      const skin = await invoke<SavedSkin>("add_saved_skin", { bytes, name, model });
+      saved(skin);
+      close();
+    } catch (error) {
+      notify(String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="modal-backdrop">
+    <section className="skin-add-modal" role="dialog" aria-modal="true" aria-labelledby="add-skin-title">
+      <div className="modal-title-row"><div><span className="overline">Biblioteca de skins</span><h1 id="add-skin-title">Adicionar skin</h1></div><IconButton label="Fechar" onClick={close}><X size={18} /></IconButton></div>
+      <div className="skin-add-layout">
+        <SkinViewer3D skinDataUrl={dataUrl} model={model} compact />
+        <div className="skin-add-form">
+          <label className="form-label">Nome da skin<input value={name} onChange={(event) => setName(event.target.value)} maxLength={48} /></label>
+          <div className="form-label">Modelo dos braços<div className="skin-model-picker">
+            <button className={model === "auto-detect" ? "active" : ""} onClick={() => setModel("auto-detect")}>Automático</button>
+            <button className={model === "default" ? "active" : ""} onClick={() => setModel("default")}>Clássico</button>
+            <button className={model === "slim" ? "active" : ""} onClick={() => setModel("slim")}>Slim</button>
+          </div></div>
+          <div className="skin-texture-info"><SkinFace skinDataUrl={dataUrl} label={name || "Skin"} /><span><b>{file.name}</b><small>PNG · {(file.size / 1024).toFixed(1)} KB</small></span></div>
+        </div>
+      </div>
+      <div className="modal-actions"><button className="secondary-button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy} onClick={() => void submit()}><Check size={16} />{busy ? "Salvando..." : "Adicionar e usar"}</button></div>
+    </section>
+  </div>;
+}
+
+function SkinsPage({ username, activeSkin, useOfflineProfile, onSkinChanged, onUseOffline, notify }: { username: string; activeSkin?: string; useOfflineProfile: boolean; onSkinChanged: (dataUrl?: string) => void; onUseOffline: () => void; notify: (message: string) => void }) {
+  const [skins, setSkins] = useState<SavedSkin[]>([]);
+  const [preview, setPreview] = useState<SavedSkin | null>(null);
+  const [pending, setPending] = useState<{ file: File; dataUrl: string } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const refresh = async () => {
+    const found = await invoke<SavedSkin[]>("list_saved_skins").catch(() => []);
+    setSkins(found);
+    setPreview((current) => found.find((skin) => skin.id === current?.id) ?? found.find((skin) => skin.active) ?? null);
+  };
+  useEffect(() => { void refresh(); }, []);
+  const chooseFile = async (file?: File) => {
+    if (!file) return;
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    }).catch(() => "");
+    if (!dataUrl) {
+      notify("Não foi possível ler a skin.");
+      return;
+    }
+    setPending({ file, dataUrl });
+    if (inputRef.current) inputRef.current.value = "";
+  };
+  const activate = async (skin: SavedSkin) => {
+    try {
+      const active = await invoke<SavedSkin>("activate_saved_skin", { id: skin.id });
+      setSkins((current) => current.map((item) => ({ ...item, active: item.id === active.id })));
+      setPreview(active);
+      onSkinChanged(active.data_url);
+      onUseOffline();
+      notify(`${active.name} agora é sua skin offline`);
+    } catch (error) {
+      notify(String(error));
+    }
+  };
+  const remove = async (skin: SavedSkin) => {
+    if (!window.confirm(`Excluir "${skin.name}" da biblioteca de skins?`)) return;
+    try {
+      const remaining = await invoke<SavedSkin[]>("delete_saved_skin", { id: skin.id });
+      setSkins(remaining);
+      const next = remaining.find((item) => item.active);
+      setPreview(next ?? null);
+      if (skin.active) onSkinChanged(next?.data_url);
+      notify(`${skin.name} removida da biblioteca`);
+    } catch (error) {
+      notify(String(error));
+    }
+  };
+  const selected = preview ?? skins.find((skin) => skin.active);
+  return <div className="skins-page">
+    <div className="page-intro"><div><span className="overline">Perfil offline</span><h1>Skins</h1><p>Visualize em 3D, guarde seus visuais e troque com um clique.</p></div><button className="primary-button" onClick={() => inputRef.current?.click()}><Plus size={17} />Adicionar skin</button></div>
+    <input ref={inputRef} className="visually-hidden" type="file" accept="image/png" onChange={(event) => void chooseFile(event.target.files?.[0])} />
+    <div className="skins-layout">
+      <section className="section-block skin-stage-panel">
+        <div className="skin-stage-title"><span className="saved-state">{useOfflineProfile ? <Check size={15} /> : <UserRound size={15} />}{useOfflineProfile ? "Perfil offline ativo" : "Visualização atual"}</span><h2>{selected?.name ?? username}</h2><small>{selected ? (selected.model === "slim" ? "Braços slim" : selected.model === "default" ? "Braços clássicos" : "Modelo automático") : "Skin atual do perfil"}</small></div>
+        <SkinViewer3D skinDataUrl={selected?.data_url ?? activeSkin} model={selected?.model} />
+      </section>
+      <section className="section-block skins-library-panel">
+        <div className="section-heading"><div><span className="overline">{skins.length} salva(s)</span><h2>Biblioteca de skins</h2></div></div>
+        <div className="saved-skins-grid">
+          <button className="add-skin-card" onClick={() => inputRef.current?.click()}><Plus size={24} /><b>Adicionar skin</b><span>PNG 64×64 ou 64×32</span></button>
+          {skins.map((skin) => <article key={skin.id} className={`saved-skin-card ${skin.active ? "active" : ""} ${preview?.id === skin.id ? "preview" : ""}`}>
+            <button className="saved-skin-main" onClick={() => void activate(skin)}>
+              <SkinFace skinDataUrl={skin.data_url} label={skin.name} large />
+              <span><b>{skin.name}</b><small>{skin.model === "slim" ? "Slim" : skin.model === "default" ? "Clássica" : "Automática"}</small></span>
+              {skin.active && <span className="skin-active-mark"><Check size={14} />Em uso</span>}
+            </button>
+            <div className="saved-skin-actions"><button className="text-button" onClick={() => setPreview(skin)}>Visualizar</button><IconButton label={`Excluir ${skin.name}`} onClick={() => void remove(skin)}><Trash2 size={15} /></IconButton></div>
+          </article>)}
+        </div>
+        {!skins.length && <div className="empty-state skin-empty"><Shirt size={27} /><span>Adicione sua primeira skin para criar a biblioteca.</span></div>}
+      </section>
+    </div>
+    {pending && <AddSkinModal file={pending.file} dataUrl={pending.dataUrl} close={() => setPending(null)} saved={(skin) => { setSkins((current) => [skin, ...current.map((item) => ({ ...item, active: false }))]); setPreview(skin); onSkinChanged(skin.data_url); onUseOffline(); notify(`${skin.name} adicionada e ativada`); }} notify={notify} />}
+  </div>;
+}
+
 function Sidebar({ page, setPage, compact, setCompact, username, skinDataUrl, accountLabel, appInstances }: { page: Page; setPage: (p: Page) => void; compact: boolean; setCompact: (v: boolean) => void; username: string; skinDataUrl?: string; accountLabel: string; appInstances: Instance[] }) {
   const items: { id: Page; label: string; icon: React.ReactNode }[] = [
     { id: "home", label: "Início", icon: <Home size={19} /> },
     { id: "library", label: "Biblioteca", icon: <Library size={19} /> },
     { id: "discover", label: "Descobrir", icon: <Compass size={19} /> },
+    { id: "skins", label: "Skins", icon: <Shirt size={19} /> },
     { id: "server", label: "Meu servidor", icon: <Server size={19} /> },
     { id: "logs", label: "Console", icon: <TerminalSquare size={19} /> }
   ];
@@ -1078,6 +1271,7 @@ const tutorialSteps: Array<{ page: Page; title: string; text: string }> = [
   { page: "home", title: "Seu ponto de partida", text: "O Início mostra o perfil ativo, a última instância jogada e ações rápidas." },
   { page: "library", title: "Sua biblioteca", text: "Crie, clone, configure e apague instâncias. Abra uma instância para cuidar dos mundos e conteúdos dela." },
   { page: "discover", title: "Descobrir conteúdo", text: "Pesquise no Modrinth e CurseForge, filtre por versão e instale apenas em instâncias compatíveis." },
+  { page: "skins", title: "Sua biblioteca de skins", text: "Visualize skins em 3D, guarde seus visuais offline e troque a skin usada em todas as instâncias." },
   { page: "server", title: "Servidor local", text: "Crie e controle seu servidor. Para amigos entrarem pela internet, o caminho mais simples é configurar um túnel no playit.gg." },
   { page: "logs", title: "Console e diagnóstico", text: "Acompanhe o Java em tempo real, copie o log e ajuste o tamanho do texto para investigar erros." },
   { page: "settings", title: "Conta e preferências", text: "Troque perfil, skin, tema, pasta do jogo e veja novamente este tutorial." }
@@ -1328,6 +1522,7 @@ function App() {
           {page === "home" && <HomePage play={play} username={activeUsername} skinDataUrl={activeSkin} accountLabel={accountLabel} appInstances={appInstances} navigate={navigate} gameDirectory={gameDirectory} notify={notify} />}
           {page === "library" && <LibraryPage play={play} appInstances={appInstances} navigate={navigate} refreshInstances={refreshInstances} notify={notify} />}
           {page === "discover" && <DiscoverPage appInstances={appInstances} />}
+          {page === "skins" && <SkinsPage username={activeUsername} activeSkin={activeSkin} useOfflineProfile={useOfflineProfile} onSkinChanged={setSkinDataUrl} onUseOffline={() => void chooseOffline()} notify={notify} />}
           {page === "server" && <ServerPage notify={notify} storageRoot={storageRoot} />}
           {page === "logs" && <LogsPage storageRoot={storageRoot} />}
           {page === "settings" && <SettingsPage username={username} skinDataUrl={skinDataUrl} microsoftSkinDataUrl={microsoftSkinDataUrl} onSkinChanged={setSkinDataUrl} onSaveProfile={saveProfile} microsoftAccount={microsoftAccount} useOfflineProfile={useOfflineProfile} onMicrosoftLogin={() => void beginMicrosoftLogin()} onUseMicrosoft={() => void useMicrosoft()} onUseOffline={() => void chooseOffline()} onMicrosoftLogout={() => void logoutMicrosoft()} storageRoot={storageRoot} gameDirectory={gameDirectory} javaRuntimes={javaRuntimes} onGameDirectoryChanged={setGameDirectory} notify={notify} theme={theme} onThemeChanged={setTheme} onOpenTutorial={() => setTutorialOpen(true)} mangohudEnabled={mangohudEnabled} minimizeOnLaunch={minimizeOnLaunch} onRuntimePreferencesChanged={async (mangohud, minimize) => { setMangohudEnabled(mangohud); setMinimizeOnLaunch(minimize); await invoke("set_runtime_preferences", { mangohudEnabled: mangohud, minimizeOnLaunch: minimize }).catch((error) => notify(String(error))); }} />}
