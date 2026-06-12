@@ -566,6 +566,34 @@ struct InstalledInstance {
 }
 
 #[derive(Debug, Serialize)]
+struct ModpackUpdateStatus {
+    supported: bool,
+    update_available: bool,
+    project_id: String,
+    project_name: String,
+    author: String,
+    game_version: String,
+    current_version: String,
+    latest_version: String,
+    latest_version_id: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MinecraftInstallationScan {
+    path: String,
+    label: String,
+    versions: Vec<String>,
+    loaders: Vec<String>,
+    mods: usize,
+    worlds: usize,
+    resource_packs: usize,
+    shaders: usize,
+    size_mb: f64,
+    managed_by_vex: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct LoaderGameVersion {
     game_version: String,
     loader_version: String,
@@ -1095,7 +1123,7 @@ async fn get_microsoft_skin_data_url() -> Result<Option<String>, String> {
         return Ok(None);
     };
     let bytes = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.5")
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?
         .get(&url)
@@ -1220,7 +1248,7 @@ fn begin_microsoft_login(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn complete_microsoft_login(code: String) -> Result<MicrosoftAccountStatus, String> {
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.5")
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let (microsoft_access_token, refresh_token) =
@@ -1555,7 +1583,7 @@ async fn create_instance(
     fs::create_dir_all(&instance_dir).map_err(|error| error.to_string())?;
     let version_id = if clean_loader == "fabric" {
         let client = reqwest::Client::builder()
-            .user_agent("VEXLauncher/0.5")
+            .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| error.to_string())?;
         let loaders: Value = client
@@ -1580,7 +1608,7 @@ async fn create_instance(
         install_fabric_profile(&client, &game_dir, clean_version, loader_version).await?
     } else if clean_loader == "quilt" {
         let client = reqwest::Client::builder()
-            .user_agent("VEXLauncher/0.5")
+            .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| error.to_string())?;
         install_quilt_profile(&client, &game_dir, clean_version).await?
@@ -1726,6 +1754,198 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn count_directory_entries(path: &Path, directories_only: bool) -> usize {
+    fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| !directories_only || entry.path().is_dir())
+                .count()
+        })
+        .unwrap_or_default()
+}
+
+fn minecraft_installation_scan(path: &Path, game_dir: &Path) -> Option<MinecraftInstallationScan> {
+    if !path.is_dir() {
+        return None;
+    }
+    let versions_dir = path.join("versions");
+    let mods = count_directory_entries(&path.join("mods"), false);
+    let worlds = count_directory_entries(&path.join("saves"), true);
+    let resource_packs = count_directory_entries(&path.join("resourcepacks"), false);
+    let shaders = count_directory_entries(&path.join("shaderpacks"), false);
+    let mut versions: Vec<String> = fs::read_dir(&versions_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let instance_metadata = fs::read_to_string(path.join("instance.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    if let Some(version) = instance_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("McVersion"))
+        .and_then(Value::as_str)
+    {
+        versions.push(version.to_owned());
+    }
+    versions.sort_by(|left, right| right.cmp(left));
+    versions.dedup();
+    versions.truncate(8);
+    if versions.is_empty()
+        && mods == 0
+        && worlds == 0
+        && resource_packs == 0
+        && shaders == 0
+        && !path.join("instance.json").is_file()
+    {
+        return None;
+    }
+    let mut loaders = Vec::new();
+    for version in &versions {
+        let lower = version.to_ascii_lowercase();
+        for loader in ["fabric", "forge", "neoforge", "quilt", "vanilla"] {
+            if lower.contains(loader) && !loaders.iter().any(|item| item == loader) {
+                loaders.push(loader.to_owned());
+            }
+        }
+    }
+    if let Some(loader) = instance_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("Loader"))
+        .and_then(Value::as_str)
+    {
+        if !loaders.iter().any(|item| item.eq_ignore_ascii_case(loader)) {
+            loaders.push(loader.to_owned());
+        }
+    }
+    if loaders.is_empty() && !versions.is_empty() {
+        loaders.push(String::from("vanilla"));
+    }
+    let canonical_game = fs::canonicalize(game_dir).unwrap_or_else(|_| game_dir.to_path_buf());
+    let canonical_path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let managed_by_vex = path.join("instance.json").is_file()
+        || canonical_path.starts_with(canonical_game.join("instances"))
+        || canonical_path.starts_with(canonical_game.join("modpacks"));
+    Some(MinecraftInstallationScan {
+        path: path.to_string_lossy().into_owned(),
+        label: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Minecraft")
+            .to_owned(),
+        versions,
+        loaders,
+        mods,
+        worlds,
+        resource_packs,
+        shaders,
+        size_mb: (directory_size(path) as f64 / 1_048_576.0 * 10.0).round() / 10.0,
+        managed_by_vex,
+    })
+}
+
+fn add_candidate(candidates: &mut HashSet<PathBuf>, path: PathBuf) {
+    if path.is_dir() {
+        candidates.insert(fs::canonicalize(&path).unwrap_or(path));
+    }
+}
+
+#[tauri::command]
+fn scan_minecraft_installations() -> Vec<MinecraftInstallationScan> {
+    let settings = read_settings();
+    let game_dir = PathBuf::from(&settings.game_directory);
+    let mut candidates = HashSet::new();
+    add_candidate(&mut candidates, game_dir.clone());
+    add_candidate(&mut candidates, default_game_directory());
+    if Path::new(r"D:\").is_dir() {
+        add_candidate(&mut candidates, PathBuf::from(r"D:\.minecraft"));
+    }
+    if let Ok(appdata) = env::var("APPDATA") {
+        let appdata = PathBuf::from(appdata);
+        add_candidate(&mut candidates, appdata.join(".minecraft"));
+        for root in [
+            appdata
+                .join("CurseForge")
+                .join("Minecraft")
+                .join("Instances"),
+            appdata.join("ModrinthApp").join("profiles"),
+        ] {
+            if let Ok(entries) = fs::read_dir(root) {
+                for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+                    add_candidate(&mut candidates, entry.path());
+                }
+            }
+        }
+    }
+    if let Ok(home) = env::var("HOME") {
+        let home = PathBuf::from(home);
+        add_candidate(&mut candidates, home.join(".minecraft"));
+        for root in [
+            home.join(".local")
+                .join("share")
+                .join("ModrinthApp")
+                .join("profiles"),
+            home.join(".local")
+                .join("share")
+                .join("PrismLauncher")
+                .join("instances"),
+        ] {
+            if let Ok(entries) = fs::read_dir(root) {
+                for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+                    add_candidate(&mut candidates, entry.path());
+                }
+            }
+        }
+    }
+    for root in [game_dir.join("instances"), game_dir.join("modpacks")] {
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+                add_candidate(&mut candidates, entry.path());
+            }
+        }
+    }
+    let mut scans: Vec<MinecraftInstallationScan> = candidates
+        .into_iter()
+        .filter_map(|path| minecraft_installation_scan(&path, &game_dir))
+        .collect();
+    scans.sort_by(|left, right| {
+        right
+            .managed_by_vex
+            .cmp(&left.managed_by_vex)
+            .then_with(|| right.size_mb.total_cmp(&left.size_mb))
+    });
+    scans
+}
+
+fn backup_instance_directory(source: &Path) -> Result<PathBuf, String> {
+    let base_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("instance");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let destination = storage_root()
+        .join("backups")
+        .join("instances")
+        .join(format!("{}-{timestamp}", safe_directory_name(base_name)));
+    copy_directory(source, &destination)?;
+    Ok(destination)
+}
+
+#[tauri::command]
+fn backup_instance(profile_dir: String) -> Result<String, String> {
+    let source = validated_instance_dir(&profile_dir)?;
+    backup_instance_directory(&source).map(|path| path.to_string_lossy().into_owned())
 }
 
 fn validated_instance_dir(profile_dir: &str) -> Result<PathBuf, String> {
@@ -1979,7 +2199,7 @@ async fn ensure_java_runtime(
         false,
     );
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.5")
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     #[cfg(windows)]
@@ -3011,7 +3231,7 @@ async fn get_modrinth_install_targets(
     game_version: String,
 ) -> Result<Vec<ModrinthInstallTarget>, String> {
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.5")
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let versions: Value = client
@@ -3206,7 +3426,7 @@ async fn install_modrinth_target(
         .and_then(|name| name.to_str())
         .ok_or_else(|| String::from("Nome de arquivo inválido."))?;
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.5")
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let bytes = download_bytes_with_progress(
@@ -3655,19 +3875,151 @@ async fn list_loader_game_versions(loader: String) -> Result<Vec<LoaderGameVersi
 }
 
 #[tauri::command]
+async fn check_modpack_update(profile_dir: String) -> Result<ModpackUpdateStatus, String> {
+    let instance_dir = validated_instance_dir(&profile_dir)?;
+    let metadata: Value = serde_json::from_str(
+        &fs::read_to_string(instance_dir.join("instance.json"))
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let source = metadata
+        .get("Source")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let project_name = metadata
+        .get("Name")
+        .and_then(Value::as_str)
+        .unwrap_or("Modpack")
+        .to_owned();
+    let author = metadata
+        .get("Author")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let game_version = metadata
+        .get("McVersion")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let project_id = metadata
+        .get("ProjectId")
+        .or_else(|| metadata.get("Id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim_start_matches("modrinth-")
+        .to_owned();
+    let current_version = metadata
+        .get("ProjectVersionNumber")
+        .and_then(Value::as_str)
+        .unwrap_or("Desconhecida")
+        .to_owned();
+    if !source.eq_ignore_ascii_case("modrinth") || project_id.is_empty() {
+        return Ok(ModpackUpdateStatus {
+            supported: false,
+            update_available: false,
+            project_id,
+            project_name,
+            author,
+            game_version,
+            current_version,
+            latest_version: String::new(),
+            latest_version_id: String::new(),
+            message: String::from(
+                "Atualizacao automatica esta disponivel para modpacks instalados pelo Modrinth.",
+            ),
+        });
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let versions: Value = client
+        .get(format!(
+            "https://api.modrinth.com/v2/project/{project_id}/version"
+        ))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    let latest = versions
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|version| {
+                let game_matches = version
+                    .get("game_versions")
+                    .and_then(Value::as_array)
+                    .is_some_and(|versions| {
+                        versions
+                            .iter()
+                            .any(|version| version.as_str() == Some(&game_version))
+                    });
+                let has_pack =
+                    version
+                        .get("files")
+                        .and_then(Value::as_array)
+                        .is_some_and(|files| {
+                            files.iter().any(|file| {
+                                file.get("filename")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|name| name.ends_with(".mrpack"))
+                            })
+                        });
+                game_matches && has_pack
+            })
+        })
+        .ok_or_else(|| format!("Nenhuma versao do modpack suporta Minecraft {game_version}."))?;
+    let latest_version_id = latest
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let latest_version = latest
+        .get("version_number")
+        .and_then(Value::as_str)
+        .unwrap_or("Mais recente")
+        .to_owned();
+    let current_version_id = metadata
+        .get("ProjectVersionId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let update_available = current_version_id.is_empty() || current_version_id != latest_version_id;
+    Ok(ModpackUpdateStatus {
+        supported: true,
+        update_available,
+        project_id,
+        project_name,
+        author,
+        game_version,
+        current_version,
+        latest_version: latest_version.clone(),
+        latest_version_id,
+        message: if update_available {
+            format!("A versao {latest_version} esta disponivel.")
+        } else {
+            String::from("O modpack ja esta atualizado.")
+        },
+    })
+}
+
+#[tauri::command]
 async fn install_modrinth_modpack(
     app: tauri::AppHandle,
     project_id: String,
     project_name: String,
     author: String,
     game_version: String,
+    target_profile_dir: Option<String>,
 ) -> Result<InstalledInstance, String> {
     let operation = "install-modpack";
     emit_progress(&app, operation, "Consultando versões do modpack", 3, false);
     let settings = read_settings();
     let game_dir = PathBuf::from(&settings.game_directory);
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.5")
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let versions: Value = client
@@ -3712,6 +4064,16 @@ async fn install_modrinth_modpack(
         .ok_or_else(|| {
             format!("Nenhum arquivo .mrpack disponível para Minecraft {game_version}.")
         })?;
+    let selected_version_id = selected
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let selected_version_number = selected
+        .get("version_number")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let pack_file = selected
         .get("files")
         .and_then(Value::as_array)
@@ -3754,7 +4116,26 @@ async fn install_modrinth_modpack(
     if instance_name.is_empty() {
         return Err(String::from("Nome de modpack inválido."));
     }
-    let instance_dir = game_dir.join("modpacks").join(&instance_name);
+    let instance_dir = if let Some(profile_dir) = target_profile_dir.as_deref() {
+        validated_instance_dir(profile_dir)?
+    } else {
+        game_dir.join("modpacks").join(&instance_name)
+    };
+    let previous_metadata = fs::read_to_string(instance_dir.join("instance.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let backup_path = if target_profile_dir.is_some() {
+        emit_progress(
+            &app,
+            operation,
+            "Criando backup antes da atualizacao",
+            29,
+            false,
+        );
+        Some(backup_instance_directory(&instance_dir)?)
+    } else {
+        None
+    };
     fs::create_dir_all(&instance_dir).map_err(|error| error.to_string())?;
     let mut archive =
         zip::ZipArchive::new(Cursor::new(pack_bytes)).map_err(|error| error.to_string())?;
@@ -3790,6 +4171,7 @@ async fn install_modrinth_modpack(
         "vanilla"
     };
 
+    let mut managed_files: Vec<String> = Vec::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
         if entry.is_dir() {
@@ -3802,6 +4184,7 @@ async fn install_modrinth_modpack(
             .strip_prefix("overrides")
             .or_else(|_| enclosed.strip_prefix("client-overrides"));
         let Ok(relative) = relative else { continue };
+        managed_files.push(relative.to_string_lossy().replace('\\', "/"));
         let destination = instance_dir.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -3832,6 +4215,7 @@ async fn install_modrinth_modpack(
         }) {
             continue;
         }
+        managed_files.push(relative.replace('\\', "/"));
         let destination = instance_dir.join(relative_path);
         let downloads = file
             .get("downloads")
@@ -3909,12 +4293,18 @@ async fn install_modrinth_modpack(
         "Name": project_name,
         "Author": author,
         "Source": "Modrinth",
+        "ProjectId": project_id,
+        "ProjectVersionId": selected_version_id,
+        "ProjectVersionNumber": selected_version_number,
         "IconPath": icon_path.clone().unwrap_or_default(),
         "McVersion": minecraft,
         "Loader": loader,
         "LoaderVersion": fabric_loader.or(quilt_loader).or(forge_loader).or(neoforge_loader).unwrap_or_default(),
         "VersionId": version_id,
-        "InstallDate": "installed-by-mine-launcher"
+        "InstallDate": "installed-by-vex-launcher",
+        "LastPlayedUnix": previous_metadata.as_ref().and_then(|value| value.get("LastPlayedUnix")).and_then(Value::as_u64).unwrap_or_default(),
+        "ManagedFiles": managed_files,
+        "LastBackupPath": backup_path.as_ref().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default()
     });
     fs::write(
         instance_dir.join("instance.json"),
@@ -4204,7 +4594,7 @@ async fn launch_instance(
     fs::write(&log_path, format!("[Launcher] Preparando {version_id}\n"))
         .map_err(|error| error.to_string())?;
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.5")
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let microsoft_account = if settings.use_offline_profile {
@@ -4733,7 +5123,7 @@ async fn start_server(app: tauri::AppHandle) -> Result<ServerStatus, String> {
         .map_err(|error| error.to_string())?;
 
     let client = reqwest::Client::builder()
-        .user_agent("VEXLauncher/0.5")
+        .user_agent(concat!("VEXLauncher/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| error.to_string())?;
     let game_dir = PathBuf::from(read_settings().game_directory);
@@ -4887,9 +5277,11 @@ pub fn run() {
             remove_curseforge_api_key,
             read_image_data_url,
             list_installed_instances,
+            scan_minecraft_installations,
             create_instance,
             list_loader_game_versions,
             clone_instance,
+            backup_instance,
             delete_instance,
             set_instance_icon,
             list_instance_content,
@@ -4904,6 +5296,7 @@ pub fn run() {
             install_curseforge_modpack,
             get_modrinth_install_targets,
             install_modrinth_target,
+            check_modpack_update,
             install_modrinth_modpack,
             save_offline_profile,
             save_offline_skin,

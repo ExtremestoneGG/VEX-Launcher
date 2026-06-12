@@ -4,7 +4,7 @@ VEX is a free and open-source Minecraft launcher focused on making the path from
 
 The project started as a design experiment built with AI-assisted programming. Its goal is to remain lightweight, direct, and accessible for players using either an official Microsoft account or an offline profile.
 
-## VEX 0.7
+## VEX 0.8
 
 - Combined Modrinth and CurseForge discovery with source, version, loader, and content-type filters.
 - Dedicated pages for mods, modpacks, shaders, resource packs, and plugins.
@@ -15,6 +15,7 @@ The project started as a design experiment built with AI-assisted programming. I
 - Automatic compatible Java runtime downloads from Eclipse Adoptium, isolated inside VEX data.
 - Saved offline profiles, a skin library, and official Microsoft login on Windows.
 - Instance library with cloning, protected deletion, worlds, screenshots, logs, and installed content.
+- Instance backups, existing-installation scanning, and safe Modrinth modpack update checks.
 - Local Vanilla, Paper, or Fabric servers with a console and a playit.gg guide.
 - Dark, AMOLED, Light, and High Contrast themes.
 - Per-user installer, self-contained portable executable, and Linux AppImage.
@@ -29,7 +30,7 @@ This flow does not depend on Prism Launcher metadata or ForgeWrapper.
 
 ## CurseForge
 
-The official CurseForge API requires a free API key. For security, VEX does not publish or embed a private key in the open-source code.
+The official CurseForge API requires a free API key. CurseForge is optional: Forge, NeoForge, Minecraft, Java, Modrinth, and every local launcher feature continue to work without it. For security, VEX does not publish or embed a private key in the open-source code.
 
 1. Create a key at [console.curseforge.com](https://console.curseforge.com/).
 2. Open **Settings > Network and sources**.

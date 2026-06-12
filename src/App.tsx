@@ -1,4 +1,5 @@
 import {
+  Archive,
   Bell,
   Box,
   Check,
@@ -28,6 +29,7 @@ import {
   Play,
   Plus,
   RotateCcw,
+  RefreshCw,
   Search,
   Server,
   Settings,
@@ -72,6 +74,8 @@ type ServerProfile = { name: string; version: string; software: string; memory_g
 type ServerStatus = { running: boolean; pid?: number; profile: ServerProfile; log_path: string };
 type OperationProgress = { operation: string; label: string; percent: number; done: boolean };
 type LoaderGameVersion = { game_version: string; loader_version: string; recommended: boolean };
+type ModpackUpdateStatus = { supported: boolean; update_available: boolean; project_id: string; project_name: string; author: string; game_version: string; current_version: string; latest_version: string; latest_version_id: string; message: string };
+type MinecraftInstallationScan = { path: string; label: string; versions: string[]; loaders: string[]; mods: number; worlds: number; resource_packs: number; shaders: number; size_mb: number; managed_by_vex: boolean };
 
 const pageMeta: Record<Page, { title: string; eyebrow: string }> = {
   home: { title: "Início", eyebrow: "Visão geral" },
@@ -449,6 +453,7 @@ function LibraryPage({ play, appInstances, refreshInstances, notify }: { play: (
   const [addMode, setAddMode] = useState(false);
   const [addResults, setAddResults] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [instanceActionBusy, setInstanceActionBusy] = useState(false);
   const selected = appInstances.find((instance) => instance.id === selectedId) ?? appInstances[0];
   const filteredInstances = appInstances.filter((instance) => instance.name.toLowerCase().includes(query.toLowerCase()) && (!onlyModded || instance.loader.toLowerCase() !== "vanilla"));
   const visibleContent = content.filter((item) => item.name.toLowerCase().includes(contentQuery.toLowerCase()) && (contentFilter === "Todos" || item.kind === contentFilter));
@@ -501,6 +506,45 @@ function LibraryPage({ play, appInstances, refreshInstances, notify }: { play: (
       notify(`${selected.name} duplicada com segurança`);
     } catch (error) { notify(String(error)); }
   };
+  const backup = async () => {
+    if (!selected?.profileDir || instanceActionBusy) return;
+    setInstanceActionBusy(true);
+    try {
+      const destination = await invoke<string>("backup_instance", { profileDir: selected.profileDir });
+      notify(`Backup criado em ${destination}`);
+    } catch (error) {
+      notify(`Nao foi possivel criar o backup: ${String(error)}`);
+    } finally {
+      setInstanceActionBusy(false);
+    }
+  };
+  const checkUpdate = async () => {
+    if (!selected?.profileDir || instanceActionBusy) return;
+    setInstanceActionBusy(true);
+    try {
+      const status = await invoke<ModpackUpdateStatus>("check_modpack_update", { profileDir: selected.profileDir });
+      if (!status.supported || !status.update_available) {
+        notify(status.message);
+        return;
+      }
+      const accepted = window.confirm(`${status.message}\n\nO VEX criara um backup completo antes de atualizar. Continuar?`);
+      if (!accepted) return;
+      await invoke("install_modrinth_modpack", {
+        projectId: status.project_id,
+        projectName: status.project_name,
+        author: status.author,
+        gameVersion: status.game_version,
+        targetProfileDir: selected.profileDir
+      });
+      await refreshInstances();
+      reloadContent();
+      notify(`${selected.name} atualizado com backup de seguranca`);
+    } catch (error) {
+      notify(`Nao foi possivel atualizar: ${String(error)}`);
+    } finally {
+      setInstanceActionBusy(false);
+    }
+  };
   const searchCompatible = async () => {
     if (!selected) return;
     try {
@@ -536,6 +580,8 @@ function LibraryPage({ play, appInstances, refreshInstances, notify }: { play: (
           {selected ? <>
             <div className="instance-detail-head"><InstanceIcon instance={selected} large /><div className="grow"><span className="overline">{selected.loader} · {selected.version}</span><h1>{selected.name}</h1><p>{selected.lastPlayed}</p></div>
               <button className="primary-button" onClick={() => play(selected)}><Play size={18} fill="currentColor" />Jogar</button>
+              {selected.kind === "modpack" && <IconButton label="Verificar atualizacao do modpack" onClick={() => void checkUpdate()}><RefreshCw size={18} /></IconButton>}
+              <IconButton label="Criar backup da instancia" onClick={() => void backup()}><Archive size={18} /></IconButton>
               <IconButton label="Duplicar instância" onClick={() => void clone()}><Copy size={18} /></IconButton>
               <IconButton label="Abrir pasta da instância" onClick={() => void invoke("open_path", { path: selected.profileDir }).catch((error) => notify(String(error)))}><FolderOpen size={19} /></IconButton>
               <IconButton label="Apagar instância" onClick={() => setDeleteTarget(selected)}><Trash2 size={18} /></IconButton>
@@ -581,6 +627,7 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [totalHits, setTotalHits] = useState(0);
+  const [curseForgeConfigured, setCurseForgeConfigured] = useState(false);
   const shown = useMemo(() => remoteProjects ?? projects.filter((project) => kind === "Tudo" || project.kind === kind.slice(0, -1) || project.kind === kind), [kind, remoteProjects]);
   const totalPages = Math.max(1, Math.ceil(totalHits / pageSize));
   const visiblePages = useMemo(() => {
@@ -616,7 +663,7 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
           })
           .catch((error) => ({ projects: [], total: 0, error: String(error) })));
       }
-      if (selectedSource !== "Modrinth") {
+      if (selectedSource !== "Modrinth" && curseForgeConfigured) {
         tasks.push(invoke<CurseForgeSearchResult>("search_curseforge", {
           query, projectType: kindMap[selectedKind] ?? "", gameVersion: selectedVersion, loader: selectedLoader,
           index: offset, pageSize: Math.min(selectedPageSize, 50)
@@ -630,7 +677,10 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
       const results = await Promise.all(tasks);
       setRemoteProjects(results.flatMap((result) => result.projects));
       setTotalHits(results.reduce((total, result) => total + result.total, 0));
-      setSearchError(results.map((result) => result.error).filter(Boolean).join(" · "));
+      const providerErrors = results.map((result) => result.error).filter(Boolean).join(" · ");
+      setSearchError(selectedSource === "CurseForge" && !curseForgeConfigured
+        ? "CurseForge e opcional. Conecte uma chave gratuita nas configuracoes ou use o Modrinth sem chave."
+        : providerErrors);
     } catch (error) {
       setSearchError(error instanceof Error ? error.message : "Não foi possível pesquisar agora.");
       setRemoteProjects(null);
@@ -641,7 +691,10 @@ function DiscoverPage({ appInstances }: { appInstances: Instance[] }) {
   };
   useEffect(() => {
     fetch("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json").then((response) => response.json()).then((data: { versions?: Array<{ id: string; type: string }> }) => setVersionOptions((data.versions ?? []).filter((item) => item.type === "release").map((item) => item.id))).catch(() => undefined);
-    void searchProjects("Modpacks", "downloads", 1, 20, "Todas", "", "");
+    invoke<CurseForgeStatus>("get_curseforge_status").then((status) => {
+      setCurseForgeConfigured(status.configured);
+      void searchProjects("Modpacks", "downloads", 1, 20, status.configured ? "Todas" : "Modrinth", "", "");
+    }).catch(() => void searchProjects("Modpacks", "downloads", 1, 20, "Modrinth", "", ""));
   }, []);
   const openProject = async (project: Project) => {
     setSelected(project);
@@ -710,7 +763,7 @@ function ProjectDetail({ project, close, appInstances }: { project: Project; clo
     if (projectType === "modpack") {
       try {
         setInstallMessage(`Instalando ${project.name}. Isso pode levar alguns minutos...`);
-        await invoke(project.source === "CurseForge" ? "install_curseforge_modpack" : "install_modrinth_modpack", { projectId: project.id, projectName: project.name, author: project.author, gameVersion: version });
+        await invoke(project.source === "CurseForge" ? "install_curseforge_modpack" : "install_modrinth_modpack", { projectId: project.id, projectName: project.name, author: project.author, gameVersion: version, targetProfileDir: null });
         setInstallMessage(`${project.name} instalado. Atualizando a Biblioteca...`);
         window.setTimeout(() => window.location.reload(), 1800);
       } catch (error) {
@@ -903,6 +956,8 @@ function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChang
   const [dense, setDense] = useState(false);
   const [curseForgeStatus, setCurseForgeStatus] = useState<CurseForgeStatus>({ configured: false, source: "Não configurada" });
   const [curseForgeKey, setCurseForgeKey] = useState("");
+  const [installations, setInstallations] = useState<MinecraftInstallationScan[]>([]);
+  const [scanningInstallations, setScanningInstallations] = useState(false);
   const skinInput = useRef<HTMLInputElement>(null);
   useEffect(() => setDraftName(username), [username]);
   useEffect(() => { invoke<CurseForgeStatus>("get_curseforge_status").then(setCurseForgeStatus).catch(() => undefined); }, []);
@@ -949,6 +1004,18 @@ function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChang
       notify(String(error));
     }
   };
+  const scanInstallations = async () => {
+    setScanningInstallations(true);
+    try {
+      const found = await invoke<MinecraftInstallationScan[]>("scan_minecraft_installations");
+      setInstallations(found);
+      notify(`${found.length} instalacao(oes) Minecraft encontrada(s)`);
+    } catch (error) {
+      notify(`Nao foi possivel analisar as instalacoes: ${String(error)}`);
+    } finally {
+      setScanningInstallations(false);
+    }
+  };
   const saveCurseForgeKey = async () => {
     try {
       const status = await invoke<CurseForgeStatus>("save_curseforge_api_key", { key: curseForgeKey });
@@ -989,8 +1056,15 @@ function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChang
           </section>
           <section className="settings-group"><div className="settings-heading"><div><h2>Perfil offline</h2><p>Use o nome e a skin locais quando não quiser entrar com a Microsoft.</p></div><span className={`saved-state ${useOfflineProfile ? "" : "pending"}`}>{useOfflineProfile ? <Check size={15} /> : <UserRound size={15} />}{useOfflineProfile ? "Em uso" : "Disponível"}</span></div><div className="account-row"><span className="account-icon"><UserRound size={19} /></span><span className="grow"><b>{username}</b><small>{skinDataUrl ? "Skin offline personalizada salva" : "Skin clássica salva"}</small></span><button className="secondary-button" disabled={useOfflineProfile} onClick={onUseOffline}>{useOfflineProfile ? "Em uso" : "Usar offline"}</button></div></section>
           <button className="logout-button" onClick={() => void logout()}><LogOut size={17} />Redefinir perfil offline</button></>}
-          {section === "minecraft" && <section className="settings-group"><div className="settings-heading"><div><h2>Pastas e armazenamento</h2><p>Downloads e instâncias permanecem no disco escolhido.</p></div></div><div className="setting-row"><span><b>Pasta do Minecraft</b><small>{gameDirectory}</small></span><div className="button-row inline"><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: gameDirectory }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button><button className="secondary-button compact" onClick={() => void changeDirectory()}>Alterar</button></div></div><div className="setting-row"><span><b>Cache do launcher</b><small>{storageRoot} · downloads temporários</small></span><button className="secondary-button compact" onClick={() => void clearCache()}>Limpar</button></div><div className="setting-row"><span><b>Java detectado</b><small>{javaRuntimes[0] ? `Java ${javaRuntimes[0].major} · ${javaRuntimes[0].path}` : "Nenhum Java encontrado"}</small></span><button className="secondary-button compact" onClick={() => setSection("advanced")}>Gerenciar</button></div></section>}
-          {section === "network" && <section className="settings-group"><div className="settings-heading"><div><h2>Rede e fontes</h2><p>Conteúdo é pesquisado e baixado diretamente de fontes conhecidas.</p></div></div><div className="setting-row"><span><b>Modrinth</b><small>Pronto para mods, modpacks, shaders e texturas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://modrinth.com")}>Abrir</button></div><div className="setting-row source-credential-row"><span><b>CurseForge</b><small>{curseForgeStatus.configured ? `Conectado · ${curseForgeStatus.source}` : "Exige uma chave gratuita de desenvolvedor. Ela fica protegida neste dispositivo."}</small></span><div className="source-credential-actions">{!curseForgeStatus.configured && <input type="password" value={curseForgeKey} onChange={(event) => setCurseForgeKey(event.target.value)} placeholder="Chave da API CurseForge" autoComplete="off" />} {!curseForgeStatus.configured && <button className="primary-button compact" disabled={!curseForgeKey.trim()} onClick={() => void saveCurseForgeKey()}>Conectar</button>}{curseForgeStatus.configured && <button className="secondary-button compact" onClick={() => void removeCurseForgeKey()}>Desconectar</button>}<button className="secondary-button compact" onClick={() => void openUrl("https://console.curseforge.com/")}>Obter chave</button></div></div><div className="setting-row"><span><b>playit.gg</b><small>Túnel opcional para compartilhar servidores locais</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://playit.gg")}>Abrir</button></div></section>}
+          {section === "minecraft" && <section className="settings-group">
+            <div className="settings-heading"><div><h2>Pastas e armazenamento</h2><p>Downloads e instâncias permanecem no disco escolhido.</p></div></div>
+            <div className="setting-row"><span><b>Pasta do Minecraft</b><small>{gameDirectory}</small></span><div className="button-row inline"><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: gameDirectory }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button><button className="secondary-button compact" onClick={() => void changeDirectory()}>Alterar</button></div></div>
+            <div className="setting-row"><span><b>Instalações existentes</b><small>Encontra pastas do Minecraft e resume versões, mods, mundos, texturas e shaders.</small></span><button className="secondary-button compact" disabled={scanningInstallations} onClick={() => void scanInstallations()}><Search size={15} />{scanningInstallations ? "Analisando..." : "Analisar"}</button></div>
+            {installations.map((installation) => <div className="setting-row installation-scan-row" key={installation.path}><span><b>{installation.label}{installation.managed_by_vex ? " · VEX" : ""}</b><small>{installation.versions.slice(0, 3).join(", ") || "Versão não identificada"} · {installation.mods} mods · {installation.worlds} mundos · {installation.resource_packs} texturas · {installation.shaders} shaders · {installation.size_mb} MB</small><small>{installation.path}</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: installation.path }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button></div>)}
+            <div className="setting-row"><span><b>Cache do launcher</b><small>{storageRoot} · downloads temporários</small></span><button className="secondary-button compact" onClick={() => void clearCache()}>Limpar</button></div>
+            <div className="setting-row"><span><b>Java detectado</b><small>{javaRuntimes[0] ? `Java ${javaRuntimes[0].major} · ${javaRuntimes[0].path}` : "Nenhum Java encontrado"}</small></span><button className="secondary-button compact" onClick={() => setSection("advanced")}>Gerenciar</button></div>
+          </section>}
+          {section === "network" && <section className="settings-group"><div className="settings-heading"><div><h2>Rede e fontes</h2><p>O Modrinth funciona sem configuração. CurseForge é uma fonte adicional opcional.</p></div></div><div className="setting-row"><span><b>Modrinth</b><small>Fonte principal sem chave para mods, modpacks, shaders e texturas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://modrinth.com")}>Abrir</button></div><div className="setting-row source-credential-row"><span><b>CurseForge · opcional</b><small>{curseForgeStatus.configured ? `Conectado · ${curseForgeStatus.source}` : "A API oficial exige uma chave gratuita. O restante do VEX continua funcionando sem ela."}</small></span><div className="source-credential-actions">{!curseForgeStatus.configured && <input type="password" value={curseForgeKey} onChange={(event) => setCurseForgeKey(event.target.value)} placeholder="Chave opcional da API CurseForge" autoComplete="off" />} {!curseForgeStatus.configured && <button className="primary-button compact" disabled={!curseForgeKey.trim()} onClick={() => void saveCurseForgeKey()}>Conectar</button>}{curseForgeStatus.configured && <button className="secondary-button compact" onClick={() => void removeCurseForgeKey()}>Desconectar</button>}<button className="secondary-button compact" onClick={() => void openUrl("https://console.curseforge.com/")}>Obter chave</button></div></div><div className="setting-row"><span><b>playit.gg</b><small>Túnel opcional para compartilhar servidores locais</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://playit.gg")}>Abrir</button></div></section>}
           {section === "appearance" && <section className="settings-group"><div className="settings-heading"><div><h2>Aparência e acessibilidade</h2><p>Escolha um tema confortável para sua tela e ajuste a densidade.</p></div></div><div className="theme-picker">{([{ id: "dark", label: "Escuro", note: "Padrão equilibrado" }, { id: "amoled", label: "AMOLED", note: "Pretos absolutos" }, { id: "light", label: "Claro", note: "Ambientes iluminados" }, { id: "contrast", label: "Alto contraste", note: "Acessibilidade" }] as Array<{ id: Theme; label: string; note: string }>).map((item) => <button key={item.id} className={theme === item.id ? "active" : ""} onClick={() => onThemeChanged(item.id)}><span className={`theme-swatch ${item.id}`}><Sun size={16} /></span><b>{item.label}</b><small>{item.note}</small></button>)}</div><div className="setting-row"><span><b>Modo compacto</b><small>Reduz espaços em listas longas.</small></span><button className="secondary-button compact" onClick={() => { setDense(!dense); document.body.classList.toggle("dense-ui", !dense); }}>{dense ? "Desativar" : "Ativar"}</button></div></section>}
           {section === "advanced" && <><section className="settings-group"><div className="settings-heading"><div><h2>Comportamento do jogo</h2><p>Preferências aplicadas ao iniciar Minecraft.</p></div></div><div className="setting-row"><span><b>Minimizar ao iniciar</b><small>Recolhe o VEX quando o Minecraft abrir.</small></span><button className="secondary-button compact" onClick={() => onRuntimePreferencesChanged(mangohudEnabled, !minimizeOnLaunch)}>{minimizeOnLaunch ? "Ativado" : "Desativado"}</button></div><div className="setting-row"><span><b>MangoHud no Linux</b><small>Ativa a camada MangoHud quando ela estiver instalada no sistema.</small></span><button className="secondary-button compact" onClick={() => onRuntimePreferencesChanged(!mangohudEnabled, minimizeOnLaunch)}>{mangohudEnabled ? "Ativado" : "Desativado"}</button></div></section><section className="settings-group"><div className="settings-heading"><div><h2>Java detectado</h2><p>O launcher seleciona automaticamente uma versão compatível.</p></div></div>{javaRuntimes.map((runtime) => <div className="setting-row" key={runtime.path}><span><b>Java {runtime.major}</b><small>{runtime.path}</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: runtime.path }).catch((error) => notify(String(error)))}>Abrir</button></div>)}{!javaRuntimes.length && <div className="empty-state"><Code2 size={22} /><span>Nenhum Java encontrado.</span></div>}</section></>}
           {section === "help" && <section className="settings-group"><div className="settings-heading"><div><h2>Ajuda</h2><p>Tutoriais, documentação e diagnóstico.</p></div></div><div className="setting-row"><span><b>Tutorial do VEX</b><small>Veja novamente o guia completo do launcher.</small></span><button className="secondary-button compact" onClick={onOpenTutorial}>Iniciar tutorial</button></div><div className="setting-row"><span><b>Ajuda do Minecraft</b><small>Conta, instalação e solução de problemas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://help.minecraft.net")}>Abrir</button></div><div className="setting-row"><span><b>Pasta de logs</b><small>{storageRoot}\logs</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: `${storageRoot}\\logs` }).catch((error) => notify(String(error)))}>Abrir</button></div></section>}
