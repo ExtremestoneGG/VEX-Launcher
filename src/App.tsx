@@ -71,6 +71,7 @@ type Theme = "dark" | "amoled" | "light" | "contrast";
 type ServerProfile = { name: string; version: string; software: string; memory_gb: number; port: number; max_players: number; motd: string; online_mode: boolean; gamemode: string; difficulty: string; directory: string };
 type ServerStatus = { running: boolean; pid?: number; profile: ServerProfile; log_path: string };
 type OperationProgress = { operation: string; label: string; percent: number; done: boolean };
+type LoaderGameVersion = { game_version: string; loader_version: string; recommended: boolean };
 
 const pageMeta: Record<Page, { title: string; eyebrow: string }> = {
   home: { title: "Início", eyebrow: "Visão geral" },
@@ -283,15 +284,41 @@ function NewInstanceModal({ close, created, notify }: { close: () => void; creat
   const [loader, setLoader] = useState("fabric");
   const [version, setVersion] = useState("1.21.4");
   const [versions, setVersions] = useState<string[]>(["1.21.4", "1.21.1", "1.20.1"]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [memory, setMemory] = useState("AUTO (4GB)");
   useEffect(() => {
-    fetch("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json")
-      .then((response) => response.json())
-      .then((data: { versions?: Array<{ id: string; type: string }> }) => setVersions((data.versions ?? []).filter((item) => item.type === "release").map((item) => item.id)))
-      .catch(() => undefined);
-  }, []);
+    let cancelled = false;
+    setLoadingVersions(true);
+    if (loader === "forge" || loader === "neoforge") {
+      setVersions([]);
+      setVersion("");
+    }
+    const loadVersions = async () => {
+      try {
+        const available = loader === "forge" || loader === "neoforge"
+          ? (await invoke<LoaderGameVersion[]>("list_loader_game_versions", { loader })).map((item) => item.game_version)
+          : await fetch("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json")
+            .then((response) => response.json())
+            .then((data: { versions?: Array<{ id: string; type: string }> }) => (data.versions ?? []).filter((item) => item.type === "release").map((item) => item.id));
+        if (!cancelled) {
+          setVersions(available);
+          setVersion((current) => available.includes(current) ? current : available[0] ?? "");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setVersions([]);
+          setVersion("");
+          notify(String(error));
+        }
+      } finally {
+        if (!cancelled) setLoadingVersions(false);
+      }
+    };
+    void loadVersions();
+    return () => { cancelled = true; };
+  }, [loader]);
   const submit = async () => {
     if (!name.trim() || !version.trim()) return;
     setBusy(true);
@@ -313,8 +340,8 @@ function NewInstanceModal({ close, created, notify }: { close: () => void; creat
       <div className="form-label">Loader<div className="loader-tabs">
         {["vanilla", "fabric", "quilt", "forge", "neoforge"].map((item) => <button key={item} className={loader === item ? "active" : ""} onClick={() => setLoader(item)}>{item === "neoforge" ? "NeoForge" : item.charAt(0).toUpperCase() + item.slice(1)}</button>)}
       </div></div>
-      <label className="form-label">Versão do Minecraft<select value={version} onChange={(event) => setVersion(event.target.value)}>{versions.map((item) => <option key={item}>{item}</option>)}</select></label>
-      {(loader === "forge" || loader === "neoforge") && <div className="inline-warning">O VEX usará o instalador oficial do {loader === "forge" ? "Forge" : "NeoForge"}. A primeira criação pode levar alguns minutos.</div>}
+      <label className="form-label">Versão do Minecraft<select value={version} disabled={loadingVersions || versions.length === 0} onChange={(event) => setVersion(event.target.value)}>{loadingVersions ? <option>Carregando versões compatíveis...</option> : versions.map((item) => <option key={item}>{item}</option>)}</select></label>
+      {(loader === "forge" || loader === "neoforge") && <div className="inline-warning">Somente versões compatíveis aparecem aqui. O VEX usará os metadados mantidos pelo Prism Launcher e selecionará a versão mais recente do {loader === "forge" ? "Forge" : "NeoForge"}.</div>}
       <button className="advanced-toggle" onClick={() => setAdvanced(!advanced)}><ChevronRight size={17} />Mais opções</button>
       {advanced && <div className="advanced-instance-options">
         <label className="form-label">Memória máxima (RAM)<input value={memory} onChange={(event) => setMemory(event.target.value)} /></label>
@@ -322,7 +349,7 @@ function NewInstanceModal({ close, created, notify }: { close: () => void; creat
         <label className="check-row"><input type="checkbox" defaultChecked /> Ocultar o launcher enquanto o jogo estiver aberto</label>
         <p>Estas preferências ficarão ligadas à instância e poderão ser alteradas depois.</p>
       </div>}
-      <div className="modal-actions"><button className="secondary-button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy} onClick={() => void submit()}><Plus size={17} />{busy ? "Criando..." : "Criar instância"}</button></div>
+      <div className="modal-actions"><button className="secondary-button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy || loadingVersions || !version} onClick={() => void submit()}><Plus size={17} />{busy ? "Criando..." : "Criar instância"}</button></div>
     </section>
   </div>;
 }

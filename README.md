@@ -1,82 +1,94 @@
 # VEX Launcher
 
-O VEX é um launcher de Minecraft gratuito e de código aberto, criado para tornar simples o caminho entre escolher uma versão e começar a jogar. Ele usa Tauri 2, React, TypeScript e Rust para manter uma interface moderna sem carregar um navegador completo junto do aplicativo.
+VEX is a free and open-source Minecraft launcher focused on making the path from choosing a version to playing as simple as possible. It uses Tauri 2, React, TypeScript, and Rust to provide a modern interface without bundling a complete browser engine.
 
-O projeto nasceu de uma experiência de design desenvolvida com programação assistida por IA. A proposta é ser leve, direto e acessível tanto para quem possui uma conta Microsoft quanto para quem usa um perfil offline.
+The project started as a design experiment built with AI-assisted programming. Its goal is to remain lightweight, direct, and accessible for players using either an official Microsoft account or an offline profile.
 
 ## VEX 0.6
 
-- Pesquisa combinada no Modrinth e CurseForge, com filtros por fonte, versão, loader e tipo de conteúdo.
-- Páginas próprias para mods, modpacks, shaders, texturas e plugins, com versões disponíveis e instalação compatível.
-- Instâncias Vanilla, Fabric, Quilt, Forge e NeoForge.
-- Instalação oficial de Forge e NeoForge, sem criar instâncias Vanilla disfarçadas.
-- Instalação de modpacks Modrinth e CurseForge com verificação de integridade quando a fonte fornece hashes.
-- Download automático do Java compatível pelo Eclipse Adoptium, isolado dentro dos dados do VEX.
-- Perfil offline salvo, biblioteca de skins e login oficial Microsoft no Windows.
-- Biblioteca de instâncias, clonagem, exclusão protegida, mundos, capturas, logs e conteúdo instalado.
-- Servidor local Vanilla, Paper ou Fabric com console e guia para uso do playit.gg.
-- Temas Escuro, AMOLED, Claro e Alto Contraste.
-- Instalador por usuário, executável portátil autocontido e AppImage para Linux.
-- Teste automático de abertura do AppImage para impedir a publicação de uma tela preta.
-- Suporte opcional ao MangoHud no Linux.
+- Combined Modrinth and CurseForge discovery with source, version, loader, and content-type filters.
+- Dedicated pages for mods, modpacks, shaders, resource packs, and plugins.
+- Vanilla, Fabric, Quilt, Forge, and NeoForge instances.
+- Forge and NeoForge profiles built from Prism Launcher metadata, with compatible Minecraft versions shown directly in the instance editor.
+- Automatic download of ForgeWrapper, installer dependencies, Maven files, and loader-specific launch arguments.
+- Modrinth and CurseForge modpack installation with integrity checks when the source provides hashes.
+- Automatic compatible Java runtime downloads from Eclipse Adoptium, isolated inside VEX data.
+- Saved offline profiles, a skin library, and official Microsoft login on Windows.
+- Instance library with cloning, protected deletion, worlds, screenshots, logs, and installed content.
+- Local Vanilla, Paper, or Fabric servers with a console and a playit.gg guide.
+- Dark, AMOLED, Light, and High Contrast themes.
+- Per-user installer, self-contained portable executable, and Linux AppImage.
+- Automated AppImage startup smoke test to prevent black-screen releases.
+- Optional MangoHud support on Linux.
+
+## Forge And NeoForge
+
+VEX follows the same metadata approach used by Prism Launcher instead of opening the official Forge installer. This allows VEX to:
+
+- show only Minecraft versions that have a compatible Forge or NeoForge release;
+- select the latest compatible loader build automatically;
+- download required libraries and installer data without an interactive installer;
+- use the correct ForgeWrapper arguments on Windows and Linux.
+
+Prism metadata is consumed from [meta.prismlauncher.org](https://meta.prismlauncher.org/v1/).
 
 ## CurseForge
 
-A API oficial do CurseForge exige uma chave gratuita. Por segurança, o VEX não publica nem envia uma chave privada dentro do código aberto.
+The official CurseForge API requires a free API key. For security, VEX does not publish or embed a private key in the open-source code.
 
-1. Crie uma chave em [console.curseforge.com](https://console.curseforge.com/).
-2. Abra **Configurações > Rede e fontes**.
-3. Cole a chave e clique em **Conectar**.
+1. Create a key at [console.curseforge.com](https://console.curseforge.com/).
+2. Open **Settings > Network and sources**.
+3. Paste the key and select **Connect**.
 
-No Windows, a chave é protegida para o usuário atual. No Linux, o arquivo local recebe permissão restrita ao próprio usuário. A chave nunca é mostrada novamente pela interface.
+On Windows, the key is protected for the current user. On Linux, the local file receives user-only permissions. The interface never displays the saved key again.
 
-Alguns autores bloqueiam downloads por aplicativos externos. Nesses casos, o VEX informa a limitação e direciona para a página oficial do projeto.
+Some authors block downloads from third-party applications. In those cases, VEX explains the limitation and opens the official project page.
 
-## Privacidade e segurança
+## Privacy And Security
 
-Mundos, skins, perfis, logs, tokens e configurações ficam apenas no computador do jogador e são ignorados pelo Git. Downloads automáticos usam HTTPS e são verificados por SHA-256, SHA-512 ou MD5 quando a fonte oficial fornece o hash.
+Worlds, skins, profiles, logs, tokens, and settings remain on the player's computer and are ignored by Git. Automatic downloads use HTTPS and are checked with SHA-256, SHA-512, or MD5 when the official source provides a hash.
 
-Leia a política completa em [SECURITY.md](SECURITY.md).
+Read the complete policy in [SECURITY.md](SECURITY.md).
 
-## Desenvolvimento
+## Development
 
-Requisitos: Node.js, Rust e as dependências do Tauri para o sistema operacional.
+Requirements: Node.js, Rust, and the Tauri dependencies for your operating system.
 
 ```powershell
 npm install
 npm run tauri dev
 ```
 
-Validação principal:
+Main validation:
 
 ```powershell
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-## Gerar versões
+## Build Packages
 
-No Windows:
+On Windows:
 
 ```powershell
 .\build-portable.ps1
 ```
 
-Esse processo gera o instalador e o executável portátil autocontido.
+This creates the installer and the self-contained portable executable.
 
-O AppImage Linux é gerado e testado automaticamente pelo GitHub Actions. Ele pode ser executado na maioria das distribuições modernas sem instalação:
+The Linux AppImage is built and tested automatically by GitHub Actions. It can run on most modern distributions without installation:
 
 ```bash
 chmod +x VEX-Launcher.AppImage
 ./VEX-Launcher.AppImage
 ```
 
-## Limitações conhecidas
+## Known Limitations
 
-- O login Microsoft integrado ainda está disponível somente no Windows.
-- Downloads bloqueados pelo autor no CurseForge precisam ser feitos na página oficial.
-- O AppImage depende de um ambiente gráfico Linux compatível com WebKitGTK.
+- Integrated Microsoft login is currently available only on Windows.
+- CurseForge downloads blocked by their author must be downloaded from the official project page.
+- The AppImage requires a Linux desktop environment compatible with WebKitGTK.
 
-## Licença
+## License
 
 MIT

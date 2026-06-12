@@ -566,6 +566,13 @@ struct InstalledInstance {
 }
 
 #[derive(Debug, Serialize)]
+struct LoaderGameVersion {
+    game_version: String,
+    loader_version: String,
+    recommended: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct LaunchResult {
     pid: u32,
     version_id: String,
@@ -1578,7 +1585,7 @@ async fn create_instance(
             .map_err(|error| error.to_string())?;
         install_quilt_profile(&client, &game_dir, clean_version).await?
     } else if clean_loader == "forge" || clean_loader == "neoforge" {
-        install_official_loader_profile(
+        install_prism_loader_profile(
             &app,
             &game_dir,
             clean_version,
@@ -2277,6 +2284,10 @@ async fn get_version_json(
 }
 
 fn maven_path(coordinate: &str) -> Option<String> {
+    let (coordinate, extension) = coordinate
+        .split_once('@')
+        .map(|(coordinate, extension)| (coordinate, extension))
+        .unwrap_or((coordinate, "jar"));
     let parts: Vec<&str> = coordinate.split(':').collect();
     if parts.len() < 3 {
         return None;
@@ -2286,13 +2297,14 @@ fn maven_path(coordinate: &str) -> Option<String> {
         .map(|value| format!("-{value}"))
         .unwrap_or_default();
     Some(format!(
-        "{}/{}/{}/{}-{}{}.jar",
+        "{}/{}/{}/{}-{}{}.{}",
         parts[0].replace('.', "/"),
         parts[1],
         parts[2],
         parts[1],
         parts[2],
-        classifier
+        classifier,
+        extension
     ))
 }
 
@@ -2438,52 +2450,10 @@ async fn prepare_libraries(
         if !should_use_library(&library) {
             continue;
         }
-        if let Some(artifact) = library
-            .get("downloads")
-            .and_then(|downloads| downloads.get("artifact"))
+        if let Some(destination) =
+            prepare_library_artifact(client, &library, &libraries_dir).await?
         {
-            if let (Some(path), Some(url)) = (
-                artifact.get("path").and_then(Value::as_str),
-                artifact.get("url").and_then(Value::as_str),
-            ) {
-                let destination =
-                    libraries_dir.join(path.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
-                let _ = download_to(client, url, &destination).await;
-                if destination.is_file() {
-                    classpath.push(destination.to_string_lossy().into_owned());
-                }
-            }
-        } else if let Some(name) = library.get("name").and_then(Value::as_str) {
-            if let Some(relative) = maven_path(name) {
-                let destination = libraries_dir
-                    .join(relative.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
-                let bases = [
-                    library.get("url").and_then(Value::as_str).unwrap_or(""),
-                    "https://maven.fabricmc.net/",
-                    "https://maven.minecraftforge.net/",
-                    "https://libraries.minecraft.net/",
-                    "https://repo1.maven.org/maven2/",
-                ];
-                for base in bases.into_iter().filter(|base| !base.is_empty()) {
-                    if download_to(
-                        client,
-                        &format!(
-                            "{}{}",
-                            base.trim_end_matches('/').to_owned() + "/",
-                            relative
-                        ),
-                        &destination,
-                    )
-                    .await
-                    .is_ok()
-                    {
-                        break;
-                    }
-                }
-                if destination.is_file() {
-                    classpath.push(destination.to_string_lossy().into_owned());
-                }
-            }
+            classpath.push(destination.to_string_lossy().into_owned());
         }
 
         let native_key = library
@@ -2513,7 +2483,69 @@ async fn prepare_libraries(
             }
         }
     }
+    for library in version
+        .get("mavenFiles")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+    {
+        prepare_library_artifact(client, &library, &libraries_dir).await?;
+    }
     Ok(classpath)
+}
+
+async fn prepare_library_artifact(
+    client: &reqwest::Client,
+    library: &Value,
+    libraries_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if !should_use_library(library) {
+        return Ok(None);
+    }
+    let Some(name) = library.get("name").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let artifact = library
+        .get("downloads")
+        .and_then(|downloads| downloads.get("artifact"));
+    let relative = artifact
+        .and_then(|artifact| artifact.get("path"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| maven_path(name))
+        .ok_or_else(|| format!("Invalid Maven coordinate: {name}"))?;
+    let destination =
+        libraries_dir.join(relative.replace('/', &std::path::MAIN_SEPARATOR.to_string()));
+    if destination.is_file() {
+        return Ok(Some(destination));
+    }
+    if let Some(url) = artifact
+        .and_then(|artifact| artifact.get("url"))
+        .and_then(Value::as_str)
+    {
+        if download_to(client, url, &destination).await.is_ok() && destination.is_file() {
+            return Ok(Some(destination));
+        }
+    }
+    let bases = [
+        library.get("url").and_then(Value::as_str).unwrap_or(""),
+        "https://maven.fabricmc.net/",
+        "https://maven.minecraftforge.net/",
+        "https://maven.neoforged.net/releases/",
+        "https://libraries.minecraft.net/",
+        "https://repo1.maven.org/maven2/",
+    ];
+    for base in bases.into_iter().filter(|base| !base.is_empty()) {
+        let url = format!(
+            "{}{}",
+            base.trim_end_matches('/').to_owned() + "/",
+            relative
+        );
+        if download_to(client, &url, &destination).await.is_ok() && destination.is_file() {
+            return Ok(Some(destination));
+        }
+    }
+    Err(format!("Could not download required library {name}."))
 }
 
 async fn prepare_assets(
@@ -3287,6 +3319,7 @@ async fn install_quilt_profile(
     Ok(profile_id)
 }
 
+#[allow(dead_code)]
 fn minecraft_version_parts(version: &str) -> (u32, u32, u32) {
     let mut parts = version
         .split('.')
@@ -3298,6 +3331,7 @@ fn minecraft_version_parts(version: &str) -> (u32, u32, u32) {
     )
 }
 
+#[allow(dead_code)]
 fn required_java_for_minecraft(version: &str) -> u32 {
     let (_, minor, patch) = minecraft_version_parts(version);
     if minor > 20 || (minor == 20 && patch >= 5) {
@@ -3311,6 +3345,7 @@ fn required_java_for_minecraft(version: &str) -> u32 {
     }
 }
 
+#[allow(dead_code)]
 fn metadata_versions(xml: &str) -> Vec<String> {
     xml.split("<version>")
         .skip(1)
@@ -3321,6 +3356,7 @@ fn metadata_versions(xml: &str) -> Vec<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 async fn resolve_official_loader_version(
     client: &reqwest::Client,
     minecraft: &str,
@@ -3369,6 +3405,7 @@ async fn resolve_official_loader_version(
     found.ok_or_else(|| format!("{loader} não está disponível para Minecraft {minecraft}."))
 }
 
+#[allow(dead_code)]
 fn find_installed_loader_profile(game_dir: &Path, minecraft: &str, loader: &str) -> Option<String> {
     let versions = game_dir.join("versions");
     let mut candidates: Vec<(u64, String)> = fs::read_dir(versions)
@@ -3388,6 +3425,7 @@ fn find_installed_loader_profile(game_dir: &Path, minecraft: &str, loader: &str)
     candidates.into_iter().next().map(|(_, id)| id)
 }
 
+#[allow(dead_code)]
 async fn install_official_loader_profile(
     app: &tauri::AppHandle,
     game_dir: &Path,
@@ -3487,6 +3525,168 @@ async fn install_official_loader_profile(
     find_installed_loader_profile(game_dir, minecraft, loader).ok_or_else(|| {
         format!("O instalador do {loader} terminou, mas o perfil criado não foi encontrado.")
     })
+}
+
+fn prism_loader_uid(loader: &str) -> Option<&'static str> {
+    match loader {
+        "forge" => Some("net.minecraftforge"),
+        "neoforge" => Some("net.neoforged"),
+        _ => None,
+    }
+}
+
+fn prism_minecraft_requirement(entry: &Value) -> Option<&str> {
+    entry
+        .get("requires")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|requirement| requirement.get("uid").and_then(Value::as_str) == Some("net.minecraft"))
+        .and_then(|requirement| requirement.get("equals"))
+        .and_then(Value::as_str)
+}
+
+async fn prism_loader_index(client: &reqwest::Client, loader: &str) -> Result<Value, String> {
+    let uid = prism_loader_uid(loader).ok_or_else(|| format!("Unknown loader: {loader}"))?;
+    client
+        .get(format!(
+            "https://meta.prismlauncher.org/v1/{uid}/index.json"
+        ))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_loader_game_versions(loader: String) -> Result<Vec<LoaderGameVersion>, String> {
+    let clean_loader = loader.trim().to_ascii_lowercase();
+    let client = reqwest::Client::builder()
+        .user_agent("VEXLauncher/0.6")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let index = prism_loader_index(&client, &clean_loader).await?;
+    let mut seen = HashSet::new();
+    let mut versions = Vec::new();
+    for entry in index
+        .get("versions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(game_version) = prism_minecraft_requirement(entry) else {
+            continue;
+        };
+        if !seen.insert(game_version.to_owned()) {
+            continue;
+        }
+        let Some(loader_version) = entry.get("version").and_then(Value::as_str) else {
+            continue;
+        };
+        versions.push(LoaderGameVersion {
+            game_version: game_version.to_owned(),
+            loader_version: loader_version.to_owned(),
+            recommended: entry
+                .get("recommended")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    Ok(versions)
+}
+
+async fn install_prism_loader_profile(
+    app: &tauri::AppHandle,
+    game_dir: &Path,
+    minecraft: &str,
+    loader: &str,
+    requested_loader_version: Option<&str>,
+    operation: &str,
+    start: u8,
+    end: u8,
+) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("VEXLauncher/0.6")
+        .build()
+        .map_err(|error| error.to_string())?;
+    emit_progress(
+        app,
+        operation,
+        format!("Checking {loader} metadata"),
+        start,
+        false,
+    );
+    let index = prism_loader_index(&client, loader).await?;
+    let requested = requested_loader_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .strip_prefix(&format!("{minecraft}-"))
+                .unwrap_or(value)
+                .to_owned()
+        });
+    let selected = index
+        .get("versions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| {
+            prism_minecraft_requirement(entry) == Some(minecraft)
+                && requested.as_deref().is_none_or(|requested| {
+                    entry.get("version").and_then(Value::as_str) == Some(requested)
+                })
+        })
+        .ok_or_else(|| {
+            if let Some(requested) = requested.as_deref() {
+                format!("{loader} {requested} is not available for Minecraft {minecraft}.")
+            } else {
+                format!("{loader} is not available for Minecraft {minecraft}.")
+            }
+        })?;
+    let loader_version = selected
+        .get("version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| String::from("Loader metadata does not contain a version."))?;
+    let uid = prism_loader_uid(loader).ok_or_else(|| format!("Unknown loader: {loader}"))?;
+    emit_progress(
+        app,
+        operation,
+        format!("Preparing {loader} {loader_version}"),
+        start.saturating_add(10),
+        false,
+    );
+    let mut profile: Value = client
+        .get(format!(
+            "https://meta.prismlauncher.org/v1/{uid}/{loader_version}.json"
+        ))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    let profile_id = format!("vex-{loader}-{minecraft}-{loader_version}");
+    profile["id"] = Value::String(profile_id.clone());
+    profile["inheritsFrom"] = Value::String(minecraft.to_owned());
+    profile["type"] = Value::String(String::from("release"));
+    profile["vexLoader"] = Value::String(loader.to_owned());
+    profile["vexLoaderVersion"] = Value::String(loader_version.to_owned());
+    let profile_dir = game_dir.join("versions").join(&profile_id);
+    fs::create_dir_all(&profile_dir).map_err(|error| error.to_string())?;
+    fs::write(
+        profile_dir.join(format!("{profile_id}.json")),
+        serde_json::to_string_pretty(&profile).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    emit_progress(app, operation, format!("{loader} ready"), end, false);
+    Ok(profile_id)
 }
 
 #[tauri::command]
@@ -3697,7 +3897,7 @@ async fn install_modrinth_modpack(
     } else if quilt_loader.is_some() {
         install_quilt_profile(&client, &game_dir, minecraft).await?
     } else if let Some(forge) = forge_loader {
-        install_official_loader_profile(
+        install_prism_loader_profile(
             &app,
             &game_dir,
             minecraft,
@@ -3709,7 +3909,7 @@ async fn install_modrinth_modpack(
         )
         .await?
     } else if let Some(neoforge) = neoforge_loader {
-        install_official_loader_profile(
+        install_prism_loader_profile(
             &app,
             &game_dir,
             minecraft,
@@ -3950,7 +4150,7 @@ async fn install_curseforge_modpack(
         "fabric" => install_fabric_profile(&client, &game_dir, minecraft, loader_version).await?,
         "quilt" => install_quilt_profile(&client, &game_dir, minecraft).await?,
         "forge" | "neoforge" => {
-            install_official_loader_profile(
+            install_prism_loader_profile(
                 &app,
                 &game_dir,
                 minecraft,
@@ -4178,6 +4378,25 @@ async fn launch_instance(
         .into_iter()
         .map(|argument| replace_launch_placeholders(&argument, &replacements))
         .collect();
+    let legacy_game: Vec<String> = version
+        .get("minecraftArguments")
+        .and_then(Value::as_str)
+        .map(|arguments| {
+            arguments
+                .split_whitespace()
+                .map(|argument| replace_launch_placeholders(argument, &replacements))
+                .collect()
+        })
+        .unwrap_or_default();
+    let tweakers: Vec<String> = version
+        .get("+tweakers")
+        .or_else(|| version.get("tweakers"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .flat_map(|tweaker| [String::from("--tweakClass"), tweaker.to_owned()])
+        .collect();
     let mut command = hidden_command(&runtime.path);
     if settings.mangohud_enabled {
         command.env("MANGOHUD", "1");
@@ -4191,29 +4410,45 @@ async fn launch_instance(
         ))
         .arg("-Dminecraft.launcher.brand=VEXLauncher")
         .arg("-Dminecraft.launcher.version=0.6")
-        .args(extra_jvm)
-        .arg("-cp")
-        .arg(classpath_text)
-        .arg(main_class)
-        .arg("--username")
-        .arg(username)
-        .arg("--version")
-        .arg(&version_id)
-        .arg("--gameDir")
-        .arg(&profile_dir)
-        .arg("--assetsDir")
-        .arg(&assets_dir)
-        .arg("--assetIndex")
-        .arg(asset_index)
-        .arg("--uuid")
-        .arg(uuid)
-        .arg("--accessToken")
-        .arg(access_token)
-        .arg("--userType")
-        .arg(user_type)
-        .arg("--versionType")
-        .arg(version_type)
-        .args(extra_game)
+        .args(extra_jvm);
+    if main_class.contains("forgewrapper.installer.Main") {
+        command
+            .arg(format!(
+                "-Dforgewrapper.librariesDir={}",
+                libraries_dir_text
+            ))
+            .arg(format!(
+                "-Dforgewrapper.minecraft={}",
+                client_jar.to_string_lossy()
+            ));
+    }
+    command.arg("-cp").arg(classpath_text).arg(main_class);
+    if legacy_game.is_empty() {
+        command
+            .arg("--username")
+            .arg(username)
+            .arg("--version")
+            .arg(&version_id)
+            .arg("--gameDir")
+            .arg(&profile_dir)
+            .arg("--assetsDir")
+            .arg(&assets_dir)
+            .arg("--assetIndex")
+            .arg(asset_index)
+            .arg("--uuid")
+            .arg(uuid)
+            .arg("--accessToken")
+            .arg(access_token)
+            .arg("--userType")
+            .arg(user_type)
+            .arg("--versionType")
+            .arg(version_type)
+            .args(extra_game);
+    } else {
+        command.args(legacy_game);
+    }
+    command
+        .args(tweakers)
         .current_dir(&game_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -4699,6 +4934,7 @@ pub fn run() {
             read_image_data_url,
             list_installed_instances,
             create_instance,
+            list_loader_game_versions,
             clone_instance,
             delete_instance,
             set_instance_icon,
@@ -4774,13 +5010,24 @@ mod tests {
     }
 
     #[test]
-    fn official_loader_metadata_is_parsed() {
-        let versions = metadata_versions(
-            "<metadata><versioning><versions><version>1.20.1-47.4.20</version><version>21.1.200</version></versions></versioning></metadata>",
+    fn prism_loader_metadata_and_maven_paths_are_supported() {
+        let entry = serde_json::json!({
+            "version": "52.1.14",
+            "requires": [{ "uid": "net.minecraft", "equals": "1.21.1" }]
+        });
+        assert_eq!(prism_minecraft_requirement(&entry), Some("1.21.1"));
+        assert_eq!(
+            maven_path("net.minecraftforge:forge:1.21.1-52.1.14:installer"),
+            Some(String::from(
+                "net/minecraftforge/forge/1.21.1-52.1.14/forge-1.21.1-52.1.14-installer.jar"
+            ))
         );
-        assert_eq!(versions, ["1.20.1-47.4.20", "21.1.200"]);
-        assert_eq!(required_java_for_minecraft("1.20.1"), 17);
-        assert_eq!(required_java_for_minecraft("1.21.1"), 21);
+        assert_eq!(
+            maven_path("de.oceanlabs.mcp:mcp_config:1.21.1-20240808.132146@zip"),
+            Some(String::from(
+                "de/oceanlabs/mcp/mcp_config/1.21.1-20240808.132146/mcp_config-1.21.1-20240808.132146.zip"
+            ))
+        );
     }
 
     #[test]
