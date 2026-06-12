@@ -341,7 +341,7 @@ function NewInstanceModal({ close, created, notify }: { close: () => void; creat
         {["vanilla", "fabric", "quilt", "forge", "neoforge"].map((item) => <button key={item} className={loader === item ? "active" : ""} onClick={() => setLoader(item)}>{item === "neoforge" ? "NeoForge" : item.charAt(0).toUpperCase() + item.slice(1)}</button>)}
       </div></div>
       <label className="form-label">Versão do Minecraft<select value={version} disabled={loadingVersions || versions.length === 0} onChange={(event) => setVersion(event.target.value)}>{loadingVersions ? <option>Carregando versões compatíveis...</option> : versions.map((item) => <option key={item}>{item}</option>)}</select></label>
-      {(loader === "forge" || loader === "neoforge") && <div className="inline-warning">Somente versões compatíveis aparecem aqui. O VEX usará os metadados mantidos pelo Prism Launcher e selecionará a versão mais recente do {loader === "forge" ? "Forge" : "NeoForge"}.</div>}
+      {(loader === "forge" || loader === "neoforge") && <div className="inline-warning">Somente versões compatíveis aparecem aqui. O VEX consulta o repositório oficial e instala silenciosamente a versão mais recente do {loader === "forge" ? "Forge" : "NeoForge"}.</div>}
       <button className="advanced-toggle" onClick={() => setAdvanced(!advanced)}><ChevronRight size={17} />Mais opções</button>
       {advanced && <div className="advanced-instance-options">
         <label className="form-label">Memória máxima (RAM)<input value={memory} onChange={(event) => setMemory(event.target.value)} /></label>
