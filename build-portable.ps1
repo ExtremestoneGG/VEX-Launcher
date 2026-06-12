@@ -23,6 +23,8 @@ if (Test-Path -LiteralPath $tools) {
 
 $releaseRoot = if ($env:CARGO_TARGET_DIR) { Join-Path $env:CARGO_TARGET_DIR "release" } else { Join-Path $PSScriptRoot "src-tauri\target\release" }
 $portableOutput = Join-Path $releaseRoot "VEX Launcher Portable.exe"
+$portableDirectory = Join-Path $releaseRoot "VEX Launcher Portable"
+$portableZip = Join-Path $releaseRoot "VEX Launcher Portable.zip"
 $launcherPayload = Join-Path $releaseRoot "vex-launcher.exe"
 $loaderPayload = Join-Path $releaseRoot "WebView2Loader.dll"
 $bootstrapSource = Join-Path $PSScriptRoot "portable-bootstrap\Program.cs"
@@ -38,4 +40,38 @@ if (-not (Test-Path -LiteralPath $loaderPayload)) {
 if ($LASTEXITCODE -ne 0) {
     throw "Não foi possível gerar o portátil autocontido."
 }
+
+$portableResolvedRoot = [IO.Path]::GetFullPath($portableDirectory)
+$releaseResolvedRoot = [IO.Path]::GetFullPath($releaseRoot)
+if (-not $portableResolvedRoot.StartsWith($releaseResolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Pasta portátil fora do diretório de build."
+}
+if (Test-Path -LiteralPath $portableDirectory) {
+    Remove-Item -LiteralPath $portableDirectory -Recurse -Force
+}
+New-Item -ItemType Directory -Path $portableDirectory | Out-Null
+Copy-Item -LiteralPath $launcherPayload -Destination (Join-Path $portableDirectory "VEX Launcher.exe")
+Copy-Item -LiteralPath $loaderPayload -Destination (Join-Path $portableDirectory "WebView2Loader.dll")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "PORTABLE.md") -Destination (Join-Path $portableDirectory "README.md")
+if (Test-Path -LiteralPath $portableZip) {
+    Remove-Item -LiteralPath $portableZip -Force
+}
+Compress-Archive -Path (Join-Path $portableDirectory "*") -DestinationPath $portableZip -CompressionLevel Optimal
+
+$installerOutput = Get-ChildItem -LiteralPath (Join-Path $releaseRoot "bundle\nsis") -Filter "*-setup.exe" |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+$checksumOutput = Join-Path $releaseRoot "SHA256SUMS.txt"
+$checksumFiles = @($portableOutput, $portableZip)
+if ($installerOutput) {
+    $checksumFiles += $installerOutput.FullName
+}
+$checksumLines = $checksumFiles | ForEach-Object {
+    $hash = Get-FileHash -LiteralPath $_ -Algorithm SHA256
+    "$($hash.Hash.ToLowerInvariant())  $(Split-Path $_ -Leaf)"
+}
+Set-Content -LiteralPath $checksumOutput -Value $checksumLines -Encoding UTF8
+
 Write-Host "Portable: $portableOutput"
+Write-Host "Portable ZIP recomendado: $portableZip"
+Write-Host "Checksums: $checksumOutput"

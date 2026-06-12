@@ -1,27 +1,36 @@
-# Política de segurança
+# Security policy
 
-## Dados locais
+## Local data
 
-O VEX armazena perfis, skins, logs, instâncias, servidores, mundos, configurações e runtimes Java localmente. Esses dados não fazem parte do repositório e nunca devem ser enviados em commits, issues ou relatórios públicos.
+VEX stores profiles, skins, logs, instances, servers, worlds, settings, and Java runtimes locally. These files are not part of the repository and must never be included in commits, issues, or public reports.
 
-O launcher não envia mundos, skins, nomes de usuário, logs ou arquivos de instâncias para serviços próprios. A rede é usada somente para autenticação solicitada pelo jogador e para baixar metadados, conteúdo e runtimes de fontes conhecidas.
+The launcher does not upload worlds, skins, usernames, logs, or instance files to a VEX service. Network access is used only for authentication requested by the player and for downloading metadata, content, and runtimes from known sources.
 
-## Credenciais
+## Credentials
 
-- No Windows, o token de renovação da conta Microsoft e a chave do CurseForge são protegidos para o usuário atual com DPAPI.
-- No Linux, a chave do CurseForge é armazenada em um arquivo local acessível somente pelo próprio usuário.
-- Senhas Microsoft são digitadas apenas na página oficial da Microsoft e nunca passam pelo VEX.
-- Nenhuma chave, token ou dado pessoal deve ser incluído no código-fonte.
+- On Windows, Microsoft refresh tokens and the optional CurseForge API key are protected for the current user with DPAPI.
+- On Linux, the CurseForge key is stored in a local user-only file.
+- Microsoft passwords are entered only on the official Microsoft page and never pass through VEX.
+- Keys, tokens, and personal data must never be included in source code.
 
-## Downloads automáticos
+## Automatic downloads
 
-- Java: Eclipse Adoptium, verificado com SHA-256.
-- Modrinth: arquivos oficiais, verificados com SHA-512 quando disponível.
-- CurseForge: arquivos da CDN oficial, verificados com MD5 quando disponível.
-- Forge e NeoForge: instaladores obtidos dos repositórios Maven oficiais.
+- Java: Eclipse Adoptium, verified with SHA-256.
+- Modrinth: official files, verified with SHA-512 when available.
+- CurseForge: official CDN files, verified with MD5 when available.
+- Forge and NeoForge: installers obtained from their official Maven repositories.
 
-O VEX restringe instalações automáticas às pastas configuradas do Minecraft, das instâncias e dos servidores.
+VEX restricts automatic installations to configured Minecraft, instance, and server directories.
 
-## Relatar uma vulnerabilidade
+## Windows SmartScreen
 
-Não publique vulnerabilidades que incluam tokens, caminhos pessoais, logs privados ou dados de jogadores em uma issue pública. Entre em contato de forma privada com o responsável pelo projeto e inclua somente os passos mínimos para reproduzir o problema.
+Current public builds are not digitally signed because the project does not yet own a trusted code-signing certificate. Windows SmartScreen and browsers can warn about newly published unsigned executables even when no malware is detected.
+
+- The recommended portable distribution is a ZIP containing the launcher and `WebView2Loader.dll`.
+- The single-file portable is self-extracting and may trigger stricter heuristic warnings.
+- Every release publishes `SHA256SUMS.txt` so downloads can be verified.
+- A self-signed certificate is not used because it does not establish public trust and can make warnings more confusing.
+
+## Reporting a vulnerability
+
+Do not publish vulnerabilities containing tokens, personal paths, private logs, or player data in a public issue. Contact the project owner privately and include only the minimum steps required to reproduce the issue.

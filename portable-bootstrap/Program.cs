@@ -6,6 +6,14 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
 
+[assembly: AssemblyTitle("VEX Launcher Portable")]
+[assembly: AssemblyDescription("Self-contained portable bootstrap for the open-source VEX Minecraft Launcher")]
+[assembly: AssemblyCompany("VEX Launcher")]
+[assembly: AssemblyProduct("VEX Launcher")]
+[assembly: AssemblyCopyright("Copyright (c) VEX Launcher contributors")]
+[assembly: AssemblyVersion("0.9.0.0")]
+[assembly: AssemblyFileVersion("0.9.0.0")]
+
 internal static class Program
 {
     private const string LauncherResource = "VexLauncher.Payload.exe";

@@ -4,7 +4,7 @@ This roadmap compares the most useful instance-management ideas from Modrinth Ap
 
 ## Available In VEX
 
-- Microsoft and offline profiles with saved offline skins.
+- Microsoft and offline profiles with a reusable offline skin library and interactive 3D previews.
 - Isolated Vanilla, Fabric, Quilt, Forge, and NeoForge instances.
 - Official Forge and NeoForge installer integration.
 - Automatic compatible Java runtime downloads.
@@ -17,7 +17,7 @@ This roadmap compares the most useful instance-management ideas from Modrinth Ap
 - Modrinth modpack update checks and updates with an automatic full backup.
 - Existing Minecraft installation scanner with version, loader, mod, world, resource-pack, and shader summaries.
 - Local server creation and console.
-- Windows installer, self-contained portable build, and Linux AppImage.
+- Windows installer, recommended portable ZIP, optional self-contained portable build, and Linux AppImage.
 
 ## Useful Next Features
 

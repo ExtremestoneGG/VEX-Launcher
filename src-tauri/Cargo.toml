@@ -1,6 +1,6 @@
 [package]
 name = "vex-launcher"
-version = "0.8.0"
+version = "0.9.0"
 description = "VEX Launcher - a modern, accessible Minecraft launcher"
 authors = ["VEX Launcher contributors"]
 edition = "2021"

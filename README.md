@@ -4,7 +4,7 @@ VEX is a free and open-source Minecraft launcher focused on making the path from
 
 The project started as a design experiment built with AI-assisted programming. Its goal is to remain lightweight, direct, and accessible for players using either an official Microsoft account or an offline profile.
 
-## VEX 0.8
+## VEX 0.9
 
 - Combined Modrinth and CurseForge discovery with source, version, loader, and content-type filters.
 - Dedicated pages for mods, modpacks, shaders, resource packs, and plugins.
@@ -13,7 +13,7 @@ The project started as a design experiment built with AI-assisted programming. I
 - Compatible Minecraft versions shown directly in the instance editor.
 - Modrinth and CurseForge modpack installation with integrity checks when the source provides hashes.
 - Automatic compatible Java runtime downloads from Eclipse Adoptium, isolated inside VEX data.
-- Saved offline profiles, a skin library, and official Microsoft login on Windows.
+- Saved offline profiles, a reusable skin library, an interactive 3D skin viewer, and official Microsoft login on Windows.
 - Instance library with cloning, protected deletion, worlds, screenshots, logs, and installed content.
 - Instance backups, existing-installation scanning, and safe Modrinth modpack update checks.
 - Local Vanilla, Paper, or Fabric servers with a console and a playit.gg guide.
@@ -70,7 +70,7 @@ On Windows:
 .\build-portable.ps1
 ```
 
-This creates the installer and the self-contained portable executable.
+This creates the installer, a self-contained portable executable, a recommended portable ZIP, and SHA-256 checksums.
 
 The Linux AppImage is built and tested automatically by GitHub Actions. It can run on most modern distributions without installation:
 
