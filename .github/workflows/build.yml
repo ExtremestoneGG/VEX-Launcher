@@ -43,7 +43,7 @@ jobs:
         run: npm run build
 
       - name: Check Rust
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 
       - name: Build installer and self-contained portable
         shell: powershell
@@ -70,7 +70,7 @@ jobs:
       - name: Install Linux desktop dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb xdotool dbus-x11
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -84,7 +84,19 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Test frontend and Rust in isolated storage
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/vex-xdg
+          VEX_STORAGE_ROOT: ${{ runner.temp }}/vex-data
+          TMPDIR: ${{ runner.temp }}/vex-tmp
+        run: |
+          mkdir -p "$XDG_DATA_HOME" "$VEX_STORAGE_ROOT" "$TMPDIR"
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
+
       - name: Build AppImage
+        env:
+          NO_STRIP: 1
         run: npm run tauri -- build --bundles appimage
 
       - name: Smoke test AppImage
@@ -92,14 +104,34 @@ jobs:
         run: |
           appimage="$(find src-tauri/target/release/bundle/appimage -name '*.AppImage' -print -quit)"
           chmod +x "$appimage"
-          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a timeout 25s "$appimage" >/tmp/vex-appimage.log 2>&1 &
-          pid=$!
-          sleep 10
-          if ! kill -0 "$pid" 2>/dev/null; then
-            cat /tmp/vex-appimage.log
-            exit 1
-          fi
-          kill "$pid" || true
+          export VEX_APPIMAGE="$appimage"
+          export VEX_SMOKE_ROOT="${RUNNER_TEMP}/vex-smoke"
+          mkdir -p "$VEX_SMOKE_ROOT/home" "$VEX_SMOKE_ROOT/xdg" "$VEX_SMOKE_ROOT/data"
+          dbus-run-session -- xvfb-run -a bash -euo pipefail -c '
+            export HOME="$VEX_SMOKE_ROOT/home"
+            export XDG_DATA_HOME="$VEX_SMOKE_ROOT/xdg"
+            export VEX_STORAGE_ROOT="$VEX_SMOKE_ROOT/data"
+            export APPIMAGE_EXTRACT_AND_RUN=1
+            timeout 30s "$VEX_APPIMAGE" >"$VEX_SMOKE_ROOT/appimage.log" 2>&1 &
+            pid=$!
+            visible=0
+            for _ in $(seq 1 20); do
+              if xdotool search --name "VEX Launcher" >/dev/null 2>&1; then
+                visible=1
+                break
+              fi
+              if ! kill -0 "$pid" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            if [ "$visible" -ne 1 ]; then
+              cat "$VEX_SMOKE_ROOT/appimage.log"
+              kill "$pid" 2>/dev/null || true
+              exit 1
+            fi
+            kill "$pid" 2>/dev/null || true
+          '
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4

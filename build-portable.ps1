@@ -15,10 +15,10 @@ if (Test-Path -LiteralPath $tools) {
     $mingw = Join-Path $tools "winlibs\mingw64\bin"
     $env:PATH = "$node;$env:CARGO_HOME\bin;$mingw;$env:PATH"
     & (Join-Path $PSScriptRoot "build-auth-helper.ps1")
-    & (Join-Path $node "npm.cmd") run tauri -- build
+    & (Join-Path $node "npm.cmd") run tauri -- build --config src-tauri/tauri.windows.conf.json
 } else {
     & (Join-Path $PSScriptRoot "build-auth-helper.ps1")
-    npm run tauri -- build
+    npm run tauri -- build --config src-tauri/tauri.windows.conf.json
 }
 
 $releaseRoot = if ($env:CARGO_TARGET_DIR) { Join-Path $env:CARGO_TARGET_DIR "release" } else { Join-Path $PSScriptRoot "src-tauri\target\release" }

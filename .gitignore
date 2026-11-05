@@ -3,6 +3,7 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 .tauri/
+.vex-dev-cache/
 auth-helper/bin/
 auth-helper/obj/
 
