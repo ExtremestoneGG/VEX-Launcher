@@ -15,6 +15,7 @@ import {
   FolderOpen,
   Gamepad2,
   Globe2,
+  HardDrive,
   Home,
   Image,
   Library,
@@ -42,9 +43,7 @@ import {
   TerminalSquare,
   Trash2,
   UserRound,
-  Users,
   X,
-  Zap,
   ZoomIn,
   ZoomOut
 } from "lucide-react";
@@ -55,6 +54,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { SkinViewer as SkinViewerType } from "skinview3d";
 import { projects, type Instance, type Project } from "./data";
+import ServerPage from "./features/server/ServerPage";
+import { joinLocalPath } from "./features/server/serverTypes";
 import steveFace from "./assets/steve-face.svg";
 import vexFace from "./assets/vexface.svg";
 import vexLogo from "./assets/vex.svg";
@@ -73,13 +74,13 @@ type CurseForgeStatus = { configured: boolean; source: string };
 type CurseForgeSearchResult = { projects: Array<{ id: string; name: string; author: string; kind: string; description: string; versions: string[]; downloads: number; icon_url?: string; page_url?: string }>; total: number };
 type InstanceContent = { name: string; path: string; kind: string; size_mb: number; modified_unix: number };
 type Theme = "dark" | "amoled" | "light" | "contrast";
-type ServerProfile = { name: string; version: string; software: string; memory_gb: number; port: number; max_players: number; motd: string; online_mode: boolean; gamemode: string; difficulty: string; directory: string };
-type ServerStatus = { running: boolean; pid?: number; profile: ServerProfile; log_path: string };
 type OperationProgress = { operation: string; label: string; percent: number; done: boolean };
 type LoaderGameVersion = { game_version: string; loader_version: string; recommended: boolean };
 type ModpackUpdateStatus = { supported: boolean; update_available: boolean; project_id: string; project_name: string; author: string; game_version: string; current_version: string; latest_version: string; latest_version_id: string; message: string };
 type MinecraftInstallationScan = { path: string; label: string; versions: string[]; loaders: string[]; mods: number; worlds: number; resource_packs: number; shaders: number; size_mb: number; managed_by_vex: boolean };
 type SavedSkin = { id: string; name: string; path: string; model: "default" | "slim" | "auto-detect"; created_unix: number; data_url: string; active: boolean };
+type StorageStatusResult = { root: string; strategy: string; configured: boolean; available_gb: number; folders: string[] };
+type StorageDisk = { id: string; label: string; mount_path: string; root_path: string; available_gb: number; total_gb: number; removable: boolean; current: boolean; recommended: boolean };
 
 const pageMeta: Record<Page, { title: string; eyebrow: string }> = {
   home: { title: "Início", eyebrow: "Visão geral" },
@@ -125,7 +126,7 @@ function ProgressPanel({ progress }: { progress: OperationProgress }) {
   );
 }
 
-function AccountChoiceModal({ onOffline, onMicrosoft, busy }: { onOffline: () => void; onMicrosoft: () => void; busy: boolean }) {
+function AccountChoiceModal({ onOffline, onMicrosoft, busy, error }: { onOffline: () => void; onMicrosoft: () => void; busy: boolean; error?: string }) {
   return (
     <div className="modal-backdrop">
       <section className="account-choice-modal" role="dialog" aria-modal="true" aria-labelledby="account-choice-title">
@@ -133,6 +134,7 @@ function AccountChoiceModal({ onOffline, onMicrosoft, busy }: { onOffline: () =>
         <span className="overline">Bem-vindo ao VEX</span>
         <h1 id="account-choice-title">Como você quer jogar?</h1>
         <p>Você poderá trocar de perfil a qualquer momento nas configurações.</p>
+        {error && <div className="account-choice-error" role="alert"><b>Não foi possível entrar</b><span>{error}</span><small>O diagnóstico também foi salvo nos logs do VEX.</small></div>}
         <div className="account-choice-list">
           <button className="account-choice microsoft" disabled={busy} onClick={onMicrosoft}>
             <span className="account-choice-icon"><ShieldCheck size={22} /></span>
@@ -149,6 +151,27 @@ function AccountChoiceModal({ onOffline, onMicrosoft, busy }: { onOffline: () =>
       </section>
     </div>
   );
+}
+
+function StorageChoiceModal({ disks, busy, error, select }: { disks: StorageDisk[]; busy: boolean; error: string; select: (disk: StorageDisk) => void }) {
+  return <div className="modal-backdrop storage-choice-backdrop">
+    <section className="account-choice-modal storage-choice-modal" role="dialog" aria-modal="true" aria-labelledby="storage-choice-title">
+      <span className="storage-choice-icon"><HardDrive size={28} /></span>
+      <span className="overline">Configuração única</span>
+      <h1 id="storage-choice-title">Onde o VEX deve guardar os arquivos?</h1>
+      <p>O VEX criará uma pasta organizada com instâncias, servidores novos, mapas, downloads e runtimes. Servidores que você importar continuam exatamente onde já estão.</p>
+      {error && <div className="account-choice-error" role="alert"><b>Não foi possível preparar o disco</b><span>{error}</span></div>}
+      <div className="storage-disk-list">
+        {disks.map((disk) => <button key={`${disk.id}-${disk.root_path}`} disabled={busy} onClick={() => select(disk)}>
+          <span className="storage-disk-icon"><HardDrive size={20} /></span>
+          <span><b>{disk.label}</b><small>{disk.available_gb.toFixed(1)} GB livres{disk.total_gb ? ` de ${disk.total_gb.toFixed(1)} GB` : ""}</small><code>{disk.root_path}</code></span>
+          {disk.recommended && <em>Recomendado</em>}
+          <ChevronRight size={18} />
+        </button>)}
+      </div>
+      <small className="privacy-note">Depois disso, as pastas técnicas são automáticas. Você poderá abri-las pelas configurações, sem precisar selecioná-las de novo.</small>
+    </section>
+  </div>;
 }
 
 function initials(name: string) {
@@ -1012,114 +1035,12 @@ function ProjectDetail({ project, close, appInstances }: { project: Project; clo
   );
 }
 
-function ServerPage({ notify, storageRoot }: { notify: (message: string) => void; storageRoot: string }) {
-  const fallback: ServerProfile = { name: "Meu servidor", version: "1.21.4", software: "vanilla", memory_gb: 4, port: 25565, max_players: 12, motd: "Servidor criado pelo VEX Launcher", online_mode: true, gamemode: "survival", difficulty: "normal", directory: `${storageRoot}\\servers\\Meu servidor` };
-  const [profile, setProfile] = useState<ServerProfile>(fallback);
-  const [running, setRunning] = useState(false);
-  const [log, setLog] = useState("O servidor ainda não foi iniciado.");
-  const [command, setCommand] = useState("");
-  const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const refresh = () => {
-    invoke<ServerStatus>("server_status").then((status) => { setRunning(status.running); setProfile(status.profile); }).catch(() => undefined);
-    invoke<string>("read_server_log").then((content) => setLog(content || "O console está vazio.")).catch(() => undefined);
-  };
-  useEffect(() => {
-    invoke<ServerProfile>("get_server_profile").then(setProfile).catch(() => undefined);
-    refresh();
-    const interval = window.setInterval(refresh, 1200);
-    return () => window.clearInterval(interval);
-  }, []);
-  const save = async () => {
-    try {
-      const saved = await invoke<ServerProfile>("save_server_profile", { profile });
-      setProfile(saved);
-      setEditing(false);
-      notify("Configuração do servidor salva");
-    } catch (error) {
-      notify(`Falha ao salvar servidor: ${String(error)}`);
-    }
-  };
-  const toggleServer = async () => {
-    setBusy(true);
-    try {
-      if (running) await invoke("stop_server");
-      else await invoke("start_server");
-      refresh();
-      notify(running ? "Comando de desligamento enviado" : "Servidor iniciando");
-    } catch (error) {
-      notify(`Falha no servidor: ${String(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const send = async () => {
-    if (!command.trim()) return;
-    try {
-      await invoke("send_server_command", { command });
-      setCommand("");
-    } catch (error) {
-      notify(String(error));
-    }
-  };
-  const clear = async () => {
-    try {
-      await invoke("clear_server_log");
-      setLog("O console está vazio.");
-    } catch (error) {
-      notify(String(error));
-    }
-  };
-  return (
-    <div className="server-page">
-      <div className="page-intro"><div><span className="overline">Controle local</span><h1>{profile.name}</h1><p>Servidor Vanilla local, configurável e controlado pelo launcher.</p></div><button disabled={busy} className={running ? "danger-button" : "primary-button"} onClick={() => void toggleServer()}>{running ? <Square size={16} fill="currentColor" /> : <Play size={17} fill="currentColor" />}{busy ? "Aguarde..." : running ? "Parar servidor" : "Iniciar servidor"}</button></div>
-      <div className="server-status-band">
-        <span className={`server-power ${running ? "online" : ""}`}><Zap size={21} /></span>
-        <div className="grow"><b>{running ? "Servidor online" : "Servidor parado"}</b><span>{running ? `localhost:${profile.port}` : "Ao iniciar, o launcher baixa o servidor oficial e abre o console."}</span></div>
-        <div className="server-stat"><span>Versão</span><b>{profile.version} {profile.software}</b></div>
-        <div className="server-stat"><span>Memória</span><b>{profile.memory_gb} GB alocados</b></div>
-        <div className="server-stat"><span>Jogadores</span><b>Até {profile.max_players}</b></div>
-      </div>
-      <div className="server-columns">
-        <section className="section-block console-block">
-          <div className="section-heading compact"><div><span className="overline">Saída em tempo real</span><h2>Console</h2></div><div className="console-actions"><span className={running ? "online-label" : "offline-label"}>{running ? "Online" : "Offline"}</span><IconButton label="Limpar console" onClick={() => void clear()}><X size={16} /></IconButton></div></div>
-          <pre className="console-output server-log">{log}</pre>
-          <div className="console-input"><span>&gt;</span><input value={command} onChange={(event) => setCommand(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void send(); }} placeholder={running ? "Digite um comando..." : "Inicie o servidor para usar o console"} disabled={!running} /><button disabled={!running} onClick={() => void send()}>Enviar</button></div>
-        </section>
-        <aside className="server-side-stack">
-          <section className="section-block server-guide">
-            <div className="section-heading compact"><h2>Como seus amigos entram</h2><CircleHelp size={17} /></div>
-            <ol><li>Crie e inicie o servidor no VEX.</li><li>Crie uma conta gratuita no playit.gg.</li><li>Configure um túnel Minecraft apontando para <b>localhost:{profile.port}</b>.</li><li>Compartilhe o endereço gerado com seus amigos.</li></ol>
-            <button className="secondary-button compact" onClick={() => void invoke("open_url", { url: "https://playit.gg" }).catch((error) => notify(String(error)))}><Globe2 size={15} />Abrir playit.gg</button>
-          </section>
-          <section className="section-block">
-            <div className="section-heading compact"><h2>Acesso</h2><IconButton label="Abrir pasta do servidor" onClick={() => void invoke("open_path", { path: profile.directory }).catch((error) => notify(String(error)))}><FolderOpen size={16} /></IconButton></div>
-            <div className="config-line"><span>Endereço local</span><b>localhost:{profile.port}</b></div><div className="config-line"><span>Conta original</span><b>{profile.online_mode ? "Obrigatória" : "Opcional"}</b></div><div className="empty-state compact-empty"><Users size={22} /><span>Jogadores conectados aparecem no próprio console.</span></div>
-          </section>
-          <section className="section-block">
-            <div className="section-heading compact"><h2>Configuração</h2><IconButton label={editing ? "Fechar edição" : "Editar servidor"} onClick={() => setEditing(!editing)}>{editing ? <X size={16} /> : <Settings size={16} />}</IconButton></div>
-            {editing ? <div className="server-form">
-              <label>Nome<input value={profile.name} onChange={(event) => setProfile({ ...profile, name: event.target.value })} /></label>
-              <label>Versão<input value={profile.version} onChange={(event) => setProfile({ ...profile, version: event.target.value })} /></label>
-              <label>Software<select value={profile.software} onChange={(event) => setProfile({ ...profile, software: event.target.value })}><option value="vanilla">Vanilla</option><option value="paper">Paper (plugins)</option><option value="fabric">Fabric (mods)</option></select></label>
-              <label>Memória (GB)<input type="number" min="1" max="32" value={profile.memory_gb} onChange={(event) => setProfile({ ...profile, memory_gb: Number(event.target.value) })} /></label>
-              <label>Porta<input type="number" min="1" max="65535" value={profile.port} onChange={(event) => setProfile({ ...profile, port: Number(event.target.value) })} /></label>
-              <label>Máximo de jogadores<input type="number" min="1" value={profile.max_players} onChange={(event) => setProfile({ ...profile, max_players: Number(event.target.value) })} /></label>
-              <label className="check-row"><input type="checkbox" checked={profile.online_mode} onChange={(event) => setProfile({ ...profile, online_mode: event.target.checked })} />Exigir conta original</label>
-              <button className="primary-button" disabled={running} onClick={() => void save()}><Check size={16} />Salvar</button>
-            </div> : <><div className="config-line"><span>Software</span><b>{profile.software}</b></div><div className="config-line"><span>Modo</span><b>{profile.gamemode}</b></div><div className="config-line"><span>Online mode</span><b>{profile.online_mode ? "Ativado" : "Desativado"}</b></div><div className="config-line"><span>Dificuldade</span><b>{profile.difficulty}</b></div><div className="config-line"><span>Porta</span><b>{profile.port}</b></div></>}
-          </section>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
 function LogsPage({ storageRoot }: { storageRoot: string }) {
   const [content, setContent] = useState("Nenhum processo iniciado nesta sessão.");
   const [following, setFollowing] = useState(true);
   const [fontSize, setFontSize] = useState(9);
   const consoleRef = useRef<HTMLPreElement>(null);
+  const latestLogPath = joinLocalPath(storageRoot, "logs", "latest.log");
   const refresh = () => invoke<string>("read_latest_log").then((log) => setContent(log || "O arquivo de log ainda está vazio.")).catch(() => undefined);
   useEffect(() => {
     refresh();
@@ -1134,14 +1055,14 @@ function LogsPage({ storageRoot }: { storageRoot: string }) {
     <div className="logs-page">
       <div className="page-intro"><div><span className="overline">Saída ao vivo</span><h1>Console</h1><p>Mensagens do launcher, Minecraft e Java aparecem aqui.</p></div><div className="button-row"><button className={`secondary-button ${following ? "following" : ""}`} onClick={() => setFollowing(!following)}><span className="status-dot" />{following ? "Acompanhando" : "Pausado"}</button><IconButton label="Diminuir texto" onClick={() => setFontSize(Math.max(7, fontSize - 1))}><ZoomOut size={16} /></IconButton><IconButton label="Aumentar texto" onClick={() => setFontSize(Math.min(18, fontSize + 1))}><ZoomIn size={16} /></IconButton><button className="secondary-button" onClick={() => void navigator.clipboard.writeText(content)}><Clipboard size={16} />Copiar</button><button className="secondary-button" onClick={refresh}><TerminalSquare size={16} />Atualizar</button></div></div>
       <section className="section-block live-console">
-        <div className="section-heading compact"><div><span className="overline">{storageRoot}\logs\latest.log</span><h2>Última execução</h2></div><span className="online-label">Somente leitura</span></div>
+        <div className="section-heading compact"><div><span className="overline">{latestLogPath}</span><h2>Última execução</h2></div><span className="online-label">Somente leitura</span></div>
         <pre ref={consoleRef} style={{ fontSize }}>{content}</pre>
       </section>
     </div>
   );
 }
 
-function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChanged, onSaveProfile, microsoftAccount, useOfflineProfile, onMicrosoftLogin, onUseMicrosoft, onUseOffline, onMicrosoftLogout, storageRoot, gameDirectory, javaRuntimes, onGameDirectoryChanged, notify, theme, onThemeChanged, onOpenTutorial, mangohudEnabled, minimizeOnLaunch, onRuntimePreferencesChanged }: { username: string; skinDataUrl?: string; microsoftSkinDataUrl?: string; onSkinChanged: (dataUrl?: string) => void; onSaveProfile: (username: string) => Promise<void>; microsoftAccount: MicrosoftAccount; useOfflineProfile: boolean; onMicrosoftLogin: () => void; onUseMicrosoft: () => void; onUseOffline: () => void; onMicrosoftLogout: () => void; storageRoot: string; gameDirectory: string; javaRuntimes: JavaRuntime[]; onGameDirectoryChanged: (path: string) => void; notify: (message: string) => void; theme: Theme; onThemeChanged: (theme: Theme) => void; onOpenTutorial: () => void; mangohudEnabled: boolean; minimizeOnLaunch: boolean; onRuntimePreferencesChanged: (mangohud: boolean, minimize: boolean) => void }) {
+function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChanged, onSaveProfile, microsoftAccount, useOfflineProfile, onMicrosoftLogin, onUseMicrosoft, onUseOffline, onMicrosoftLogout, storageRoot, gameDirectory, javaRuntimes, notify, theme, onThemeChanged, onOpenTutorial, mangohudEnabled, minimizeOnLaunch, onRuntimePreferencesChanged }: { username: string; skinDataUrl?: string; microsoftSkinDataUrl?: string; onSkinChanged: (dataUrl?: string) => void; onSaveProfile: (username: string) => Promise<void>; microsoftAccount: MicrosoftAccount; useOfflineProfile: boolean; onMicrosoftLogin: () => void; onUseMicrosoft: () => void; onUseOffline: () => void; onMicrosoftLogout: () => void; storageRoot: string; gameDirectory: string; javaRuntimes: JavaRuntime[]; notify: (message: string) => void; theme: Theme; onThemeChanged: (theme: Theme) => void; onOpenTutorial: () => void; mangohudEnabled: boolean; minimizeOnLaunch: boolean; onRuntimePreferencesChanged: (mangohud: boolean, minimize: boolean) => void }) {
   const [draftName, setDraftName] = useState(username);
   const [saved, setSaved] = useState(true);
   const [skinStatus, setSkinStatus] = useState("Nenhuma skin personalizada");
@@ -1178,17 +1099,6 @@ function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChang
     setSkinStatus("Nenhuma skin personalizada");
   };
   const openUrl = (url: string) => invoke("open_url", { url }).catch((error) => notify(String(error)));
-  const changeDirectory = async () => {
-    const path = window.prompt("Pasta do Minecraft:", gameDirectory)?.trim();
-    if (!path || path === gameDirectory) return;
-    try {
-      const result = await invoke<LauncherSettingsResult>("set_game_directory", { gameDirectory: path });
-      onGameDirectoryChanged(result.game_directory);
-      notify("Pasta do Minecraft atualizada");
-    } catch (error) {
-      notify(`Não foi possível alterar a pasta: ${String(error)}`);
-    }
-  };
   const clearCache = async () => {
     try {
       const bytes = await invoke<number>("clear_launcher_cache");
@@ -1251,7 +1161,8 @@ function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChang
           <button className="logout-button" onClick={() => void logout()}><LogOut size={17} />Redefinir perfil offline</button></>}
           {section === "minecraft" && <section className="settings-group">
             <div className="settings-heading"><div><h2>Pastas e armazenamento</h2><p>Downloads e instâncias permanecem no disco escolhido.</p></div></div>
-            <div className="setting-row"><span><b>Pasta do Minecraft</b><small>{gameDirectory}</small></span><div className="button-row inline"><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: gameDirectory }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button><button className="secondary-button compact" onClick={() => void changeDirectory()}>Alterar</button></div></div>
+            <div className="setting-row"><span><b>Pasta padrão do Minecraft</b><small>{gameDirectory} · definida automaticamente pelo disco escolhido</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: gameDirectory }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button></div>
+            <div className="setting-row"><span><b>Raiz de dados do VEX</b><small>{storageRoot} · servidores novos, instâncias, mapas, downloads, runtimes e logs</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: storageRoot }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button></div>
             <div className="setting-row"><span><b>Instalações existentes</b><small>Encontra pastas do Minecraft e resume versões, mods, mundos, texturas e shaders.</small></span><button className="secondary-button compact" disabled={scanningInstallations} onClick={() => void scanInstallations()}><Search size={15} />{scanningInstallations ? "Analisando..." : "Analisar"}</button></div>
             {installations.map((installation) => <div className="setting-row installation-scan-row" key={installation.path}><span><b>{installation.label}{installation.managed_by_vex ? " · VEX" : ""}</b><small>{installation.versions.slice(0, 3).join(", ") || "Versão não identificada"} · {installation.mods} mods · {installation.worlds} mundos · {installation.resource_packs} texturas · {installation.shaders} shaders · {installation.size_mb} MB</small><small>{installation.path}</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: installation.path }).catch((error) => notify(String(error)))}><FolderOpen size={15} />Abrir</button></div>)}
             <div className="setting-row"><span><b>Cache do launcher</b><small>{storageRoot} · downloads temporários</small></span><button className="secondary-button compact" onClick={() => void clearCache()}>Limpar</button></div>
@@ -1260,7 +1171,7 @@ function SettingsPage({ username, skinDataUrl, microsoftSkinDataUrl, onSkinChang
           {section === "network" && <section className="settings-group"><div className="settings-heading"><div><h2>Rede e fontes</h2><p>O Modrinth funciona sem configuração. CurseForge é uma fonte adicional opcional.</p></div></div><div className="setting-row"><span><b>Modrinth</b><small>Fonte principal sem chave para mods, modpacks, shaders e texturas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://modrinth.com")}>Abrir</button></div><div className="setting-row source-credential-row"><span><b>CurseForge · opcional</b><small>{curseForgeStatus.configured ? `Conectado · ${curseForgeStatus.source}` : "A API oficial exige uma chave gratuita. O restante do VEX continua funcionando sem ela."}</small></span><div className="source-credential-actions">{!curseForgeStatus.configured && <input type="password" value={curseForgeKey} onChange={(event) => setCurseForgeKey(event.target.value)} placeholder="Chave opcional da API CurseForge" autoComplete="off" />} {!curseForgeStatus.configured && <button className="primary-button compact" disabled={!curseForgeKey.trim()} onClick={() => void saveCurseForgeKey()}>Conectar</button>}{curseForgeStatus.configured && <button className="secondary-button compact" onClick={() => void removeCurseForgeKey()}>Desconectar</button>}<button className="secondary-button compact" onClick={() => void openUrl("https://console.curseforge.com/")}>Obter chave</button></div></div><div className="setting-row"><span><b>playit.gg</b><small>Túnel opcional para compartilhar servidores locais</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://playit.gg")}>Abrir</button></div></section>}
           {section === "appearance" && <section className="settings-group"><div className="settings-heading"><div><h2>Aparência e acessibilidade</h2><p>Escolha um tema confortável para sua tela e ajuste a densidade.</p></div></div><div className="theme-picker">{([{ id: "dark", label: "Escuro", note: "Padrão equilibrado" }, { id: "amoled", label: "AMOLED", note: "Pretos absolutos" }, { id: "light", label: "Claro", note: "Ambientes iluminados" }, { id: "contrast", label: "Alto contraste", note: "Acessibilidade" }] as Array<{ id: Theme; label: string; note: string }>).map((item) => <button key={item.id} className={theme === item.id ? "active" : ""} onClick={() => onThemeChanged(item.id)}><span className={`theme-swatch ${item.id}`}><Sun size={16} /></span><b>{item.label}</b><small>{item.note}</small></button>)}</div><div className="setting-row"><span><b>Modo compacto</b><small>Reduz espaços em listas longas.</small></span><button className="secondary-button compact" onClick={() => { setDense(!dense); document.body.classList.toggle("dense-ui", !dense); }}>{dense ? "Desativar" : "Ativar"}</button></div></section>}
           {section === "advanced" && <><section className="settings-group"><div className="settings-heading"><div><h2>Comportamento do jogo</h2><p>Preferências aplicadas ao iniciar Minecraft.</p></div></div><div className="setting-row"><span><b>Minimizar ao iniciar</b><small>Recolhe o VEX quando o Minecraft abrir.</small></span><button className="secondary-button compact" onClick={() => onRuntimePreferencesChanged(mangohudEnabled, !minimizeOnLaunch)}>{minimizeOnLaunch ? "Ativado" : "Desativado"}</button></div><div className="setting-row"><span><b>MangoHud no Linux</b><small>Ativa a camada MangoHud quando ela estiver instalada no sistema.</small></span><button className="secondary-button compact" onClick={() => onRuntimePreferencesChanged(!mangohudEnabled, minimizeOnLaunch)}>{mangohudEnabled ? "Ativado" : "Desativado"}</button></div></section><section className="settings-group"><div className="settings-heading"><div><h2>Java detectado</h2><p>O launcher seleciona automaticamente uma versão compatível.</p></div></div>{javaRuntimes.map((runtime) => <div className="setting-row" key={runtime.path}><span><b>Java {runtime.major}</b><small>{runtime.path}</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: runtime.path }).catch((error) => notify(String(error)))}>Abrir</button></div>)}{!javaRuntimes.length && <div className="empty-state"><Code2 size={22} /><span>Nenhum Java encontrado.</span></div>}</section></>}
-          {section === "help" && <section className="settings-group"><div className="settings-heading"><div><h2>Ajuda</h2><p>Tutoriais, documentação e diagnóstico.</p></div></div><div className="setting-row"><span><b>Tutorial do VEX</b><small>Veja novamente o guia completo do launcher.</small></span><button className="secondary-button compact" onClick={onOpenTutorial}>Iniciar tutorial</button></div><div className="setting-row"><span><b>Ajuda do Minecraft</b><small>Conta, instalação e solução de problemas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://help.minecraft.net")}>Abrir</button></div><div className="setting-row"><span><b>Pasta de logs</b><small>{storageRoot}\logs</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: `${storageRoot}\\logs` }).catch((error) => notify(String(error)))}>Abrir</button></div></section>}
+          {section === "help" && <section className="settings-group"><div className="settings-heading"><div><h2>Ajuda</h2><p>Tutoriais, documentação e diagnóstico.</p></div></div><div className="setting-row"><span><b>Tutorial do VEX</b><small>Veja novamente o guia completo do launcher.</small></span><button className="secondary-button compact" onClick={onOpenTutorial}>Iniciar tutorial</button></div><div className="setting-row"><span><b>Ajuda do Minecraft</b><small>Conta, instalação e solução de problemas</small></span><button className="secondary-button compact" onClick={() => void openUrl("https://help.minecraft.net")}>Abrir</button></div><div className="setting-row"><span><b>Pasta de logs</b><small>{joinLocalPath(storageRoot, "logs")}</small></span><button className="secondary-button compact" onClick={() => void invoke("open_path", { path: joinLocalPath(storageRoot, "logs") }).catch((error) => notify(String(error)))}>Abrir</button></div></section>}
         </div>
       </div>
     </div>
@@ -1272,9 +1183,9 @@ const tutorialSteps: Array<{ page: Page; title: string; text: string }> = [
   { page: "library", title: "Sua biblioteca", text: "Crie, clone, configure e apague instâncias. Abra uma instância para cuidar dos mundos e conteúdos dela." },
   { page: "discover", title: "Descobrir conteúdo", text: "Pesquise no Modrinth e CurseForge, filtre por versão e instale apenas em instâncias compatíveis." },
   { page: "skins", title: "Sua biblioteca de skins", text: "Visualize skins em 3D, guarde seus visuais offline e troque a skin usada em todas as instâncias." },
-  { page: "server", title: "Servidor local", text: "Crie e controle seu servidor. Para amigos entrarem pela internet, o caminho mais simples é configurar um túnel no playit.gg." },
+  { page: "server", title: "Servidor local", text: "Crie, encontre e controle vários servidores. Visualização de mapa e geração de chunks ficam separadas; para amigos entrarem, conecte o túnel do playit.gg." },
   { page: "logs", title: "Console e diagnóstico", text: "Acompanhe o Java em tempo real, copie o log e ajuste o tamanho do texto para investigar erros." },
-  { page: "settings", title: "Conta e preferências", text: "Troque perfil, skin, tema, pasta do jogo e veja novamente este tutorial." }
+  { page: "settings", title: "Conta e preferências", text: "Troque perfil, skin e tema, abra as pastas organizadas pelo VEX e veja novamente este tutorial." }
 ];
 
 function TutorialOverlay({ initialPage, navigate, close }: { initialPage: Page; navigate: (page: Page) => void; close: () => void }) {
@@ -1318,14 +1229,19 @@ function App() {
   const [useOfflineProfile, setUseOfflineProfile] = useState(true);
   const [onboardingCompleted, setOnboardingCompleted] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [appInstances, setAppInstances] = useState<Instance[]>([]);
-  const [storageRoot, setStorageRoot] = useState("D:\\MineLauncher");
-  const [gameDirectory, setGameDirectory] = useState("D:\\.minecraft");
+  const [storageRoot, setStorageRoot] = useState(".");
+  const [gameDirectory, setGameDirectory] = useState(".");
   const [javaRuntimes, setJavaRuntimes] = useState<JavaRuntime[]>([]);
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("vex-theme") as Theme) || "dark");
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const [mangohudEnabled, setMangohudEnabled] = useState(false);
   const [minimizeOnLaunch, setMinimizeOnLaunch] = useState(true);
+  const [storageDisks, setStorageDisks] = useState<StorageDisk[]>([]);
+  const [storageChoiceRequired, setStorageChoiceRequired] = useState(false);
+  const [storageChoiceBusy, setStorageChoiceBusy] = useState(false);
+  const [storageChoiceError, setStorageChoiceError] = useState("");
   const notify = (message: string, duration = 3200) => {
     setToast(message);
     window.setTimeout(() => setToast(""), duration);
@@ -1338,7 +1254,7 @@ function App() {
       name: instance.name,
       loader: instance.loader.charAt(0).toUpperCase() + instance.loader.slice(1),
       version: instance.mc_version,
-      lastPlayed: instance.kind === "modpack" ? "Modpack instalado" : `${instance.size_mb} MB`,
+      lastPlayed: instance.kind === "modpack" ? "Modpack instalado" : instance.kind === "server-instance" ? "Vinculada ao servidor" : `${instance.size_mb} MB`,
       color: colors[instance.loader] ?? "#777b87",
       icon: initials(instance.name),
       iconUrl: instance.icon_path ? await invoke<string>("read_image_data_url", { path: instance.icon_path }).catch(() => undefined) : undefined,
@@ -1355,6 +1271,17 @@ function App() {
     let finishTimer = 0;
     const initialize = async () => {
       setBootProgress(18);
+      const currentStorage = await invoke<StorageStatusResult>("storage_status").catch(() => null);
+      if (mounted && currentStorage && !currentStorage.configured) {
+        const disks = await invoke<StorageDisk[]>("list_storage_disks").catch(() => []);
+        if (!mounted) return;
+        if (disks.length === 1) {
+          await invoke<StorageStatusResult>("select_storage_disk", { rootPath: disks[0].root_path }).catch(() => null);
+        } else if (disks.length > 1) {
+          setStorageDisks(disks);
+          setStorageChoiceRequired(true);
+        }
+      }
       const settings = await invoke<LauncherSettingsResult>("get_launcher_settings").catch(() => null);
       if (!mounted) return;
       if (settings) {
@@ -1411,16 +1338,20 @@ function App() {
             if (mounted && cachedSkin) setMicrosoftSkinDataUrl(cachedSkin);
             setUseOfflineProfile(false);
             setOnboardingCompleted(true);
+            setAuthError("");
             notify(`Conta Microsoft ${account.username} conectada`, 5200);
           } catch (error) {
-            notify(`Falha no login Microsoft: ${String(error)}`, 7200);
+            const message = `Falha no login Microsoft: ${String(error)}`;
+            setAuthError(message);
+            notify(message, 15000);
           } finally {
             if (mounted) setAuthBusy(false);
           }
         }), listen<string>("microsoft-auth-error", ({ payload }) => {
           if (!mounted) return;
           setAuthBusy(false);
-          notify(payload, 6200);
+          setAuthError(payload);
+          notify(payload, 15000);
         })]
       : [Promise.resolve(() => undefined)];
     return () => {
@@ -1446,16 +1377,20 @@ function App() {
   };
   const beginMicrosoftLogin = async () => {
     setAuthBusy(true);
+    setAuthError("");
     try {
       await invoke("begin_microsoft_login");
       notify("Conclua o login na janela oficial da Microsoft", 5200);
     } catch (error) {
-      notify(`Não foi possível abrir o login Microsoft: ${String(error)}`, 7200);
+      const message = `Não foi possível abrir o login Microsoft: ${String(error)}`;
+      setAuthError(message);
+      notify(message, 15000);
     } finally {
       setAuthBusy(false);
     }
   };
   const chooseOffline = async () => {
+    setAuthError("");
     setUseOfflineProfile(true);
     setOnboardingCompleted(true);
     try {
@@ -1507,13 +1442,25 @@ function App() {
     }
   };
   const navigate = (next: Page) => { setPage(next); setSidebarOpen(false); };
+  const selectStorageDisk = async (disk: StorageDisk) => {
+    setStorageChoiceBusy(true);
+    setStorageChoiceError("");
+    try {
+      await invoke<StorageStatusResult>("select_storage_disk", { rootPath: disk.root_path });
+      window.location.reload();
+    } catch (error) {
+      setStorageChoiceError(String(error));
+      setStorageChoiceBusy(false);
+    }
+  };
   const activeUsername = !useOfflineProfile && microsoftAccount.logged_in ? microsoftAccount.username : username;
   const activeSkin = !useOfflineProfile && microsoftAccount.logged_in ? (microsoftAccount.skin_data_url ?? microsoftSkinDataUrl ?? microsoftAccount.skin_url) : skinDataUrl;
   const accountLabel = !useOfflineProfile && microsoftAccount.logged_in ? "Conta Microsoft" : "Perfil offline";
   return (
     <div className="app-window">
       {booting && <BootScreen progress={bootProgress} />}
-      {!booting && !onboardingCompleted && <AccountChoiceModal onOffline={() => void chooseOffline()} onMicrosoft={() => void beginMicrosoftLogin()} busy={authBusy} />}
+      {!booting && storageChoiceRequired && <StorageChoiceModal disks={storageDisks} busy={storageChoiceBusy} error={storageChoiceError} select={(disk) => void selectStorageDisk(disk)} />}
+      {!booting && !storageChoiceRequired && !onboardingCompleted && <AccountChoiceModal onOffline={() => void chooseOffline()} onMicrosoft={() => void beginMicrosoftLogin()} busy={authBusy} error={authError} />}
       {!booting && onboardingCompleted && tutorialOpen && <TutorialOverlay initialPage={page} navigate={navigate} close={() => setTutorialOpen(false)} />}
       <Topbar page={page} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} notify={notify} />
       <div className="app-body">
@@ -1523,9 +1470,9 @@ function App() {
           {page === "library" && <LibraryPage play={play} appInstances={appInstances} navigate={navigate} refreshInstances={refreshInstances} notify={notify} />}
           {page === "discover" && <DiscoverPage appInstances={appInstances} />}
           {page === "skins" && <SkinsPage username={activeUsername} activeSkin={activeSkin} useOfflineProfile={useOfflineProfile} onSkinChanged={setSkinDataUrl} onUseOffline={() => void chooseOffline()} notify={notify} />}
-          {page === "server" && <ServerPage notify={notify} storageRoot={storageRoot} />}
+          {page === "server" && <ServerPage notify={notify} storageRoot={storageRoot} onOpenDiscover={() => navigate("discover")} onOpenLibrary={() => { void refreshInstances(); navigate("library"); }} />}
           {page === "logs" && <LogsPage storageRoot={storageRoot} />}
-          {page === "settings" && <SettingsPage username={username} skinDataUrl={skinDataUrl} microsoftSkinDataUrl={microsoftSkinDataUrl} onSkinChanged={setSkinDataUrl} onSaveProfile={saveProfile} microsoftAccount={microsoftAccount} useOfflineProfile={useOfflineProfile} onMicrosoftLogin={() => void beginMicrosoftLogin()} onUseMicrosoft={() => void useMicrosoft()} onUseOffline={() => void chooseOffline()} onMicrosoftLogout={() => void logoutMicrosoft()} storageRoot={storageRoot} gameDirectory={gameDirectory} javaRuntimes={javaRuntimes} onGameDirectoryChanged={setGameDirectory} notify={notify} theme={theme} onThemeChanged={setTheme} onOpenTutorial={() => setTutorialOpen(true)} mangohudEnabled={mangohudEnabled} minimizeOnLaunch={minimizeOnLaunch} onRuntimePreferencesChanged={async (mangohud, minimize) => { setMangohudEnabled(mangohud); setMinimizeOnLaunch(minimize); await invoke("set_runtime_preferences", { mangohudEnabled: mangohud, minimizeOnLaunch: minimize }).catch((error) => notify(String(error))); }} />}
+          {page === "settings" && <SettingsPage username={username} skinDataUrl={skinDataUrl} microsoftSkinDataUrl={microsoftSkinDataUrl} onSkinChanged={setSkinDataUrl} onSaveProfile={saveProfile} microsoftAccount={microsoftAccount} useOfflineProfile={useOfflineProfile} onMicrosoftLogin={() => void beginMicrosoftLogin()} onUseMicrosoft={() => void useMicrosoft()} onUseOffline={() => void chooseOffline()} onMicrosoftLogout={() => void logoutMicrosoft()} storageRoot={storageRoot} gameDirectory={gameDirectory} javaRuntimes={javaRuntimes} notify={notify} theme={theme} onThemeChanged={setTheme} onOpenTutorial={() => setTutorialOpen(true)} mangohudEnabled={mangohudEnabled} minimizeOnLaunch={minimizeOnLaunch} onRuntimePreferencesChanged={async (mangohud, minimize) => { setMangohudEnabled(mangohud); setMinimizeOnLaunch(minimize); await invoke("set_runtime_preferences", { mangohudEnabled: mangohud, minimizeOnLaunch: minimize }).catch((error) => notify(String(error))); }} />}
         </main>
       </div>
       {!booting && onboardingCompleted && !tutorialOpen && <button className="floating-help" aria-label="Abrir tutorial desta área" title="Ajuda e tutorial" onClick={() => setTutorialOpen(true)}><CircleHelp size={20} /></button>}

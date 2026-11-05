@@ -1,16 +1,18 @@
 {
   "name": "vex-launcher",
   "private": true,
-  "version": "0.9.0",
+  "version": "0.11.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
+    "build:linux": "bash ./build-linux.sh",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "lucide-react": "^0.468.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
